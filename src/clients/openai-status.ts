@@ -67,7 +67,7 @@ export class OpenAIStatusClient {
     let lastError: unknown;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        const response = await this.fetcher(url, {
+        const response = await this.fetcher.call(globalThis, url, {
           headers: {
             Accept: "application/json",
             "User-Agent": "openai-codex-status-worker/1.0",

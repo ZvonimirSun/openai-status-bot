@@ -66,7 +66,8 @@ export class TelegramNotifier implements Notifier {
   }
 
   async sendToChat(chatId: string, text: string): Promise<void> {
-    const response = await this.fetcher(
+    const response = await this.fetcher.call(
+      globalThis,
       `https://api.telegram.org/bot${this.token}/sendMessage`,
       {
         method: "POST",
@@ -99,7 +100,7 @@ export class WeComNotifier implements Notifier {
 
   async send(parts: string[]): Promise<void> {
     for (const part of parts) {
-      const response = await this.fetcher(this.webhookUrl, {
+      const response = await this.fetcher.call(globalThis, this.webhookUrl, {
         method: "POST",
         signal: this.signal
           ? AbortSignal.any([this.signal, AbortSignal.timeout(10_000)])

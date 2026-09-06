@@ -41,7 +41,7 @@ export class TranslationClient {
         title: event.incidentName,
         body: event.body,
       }));
-      const response = await this.fetcher(apiUrl, {
+      const response = await this.fetcher.call(globalThis, apiUrl, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${this.config.apiKey}`,
