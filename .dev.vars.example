@@ -1,0 +1,12 @@
+# Optional Telegram notifications require both token and chat ID.
+# TELEGRAM_BOT_TOKEN=replace-with-telegram-bot-token
+# TELEGRAM_CHAT_ID=replace-with-telegram-chat-id
+# Optional /check additionally requires a webhook secret.
+# TELEGRAM_WEBHOOK_SECRET=replace-with-telegram-webhook-secret
+CHECK_TOKEN=replace-with-a-long-random-token
+# Optional third-party translation API. Base URL defaults to DeepSeek.
+# TRANSLATION_API_KEY=replace-with-provider-api-key
+# TRANSLATION_MODEL=replace-with-model-id
+# TRANSLATION_API_BASE_URL=https://provider.example/v1
+# TRANSLATION_API_STYLE=chat-completions
+# WECOM_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=replace-me

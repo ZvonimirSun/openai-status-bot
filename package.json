@@ -1,0 +1,27 @@
+{
+  "name": "openai-codex-status-wecom",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --test-scheduled",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run typecheck && npm run test && npm run format:check",
+    "cf-typegen": "wrangler types",
+    "deploy": "wrangler deploy",
+    "deploy:preview": "wrangler versions upload",
+    "deploy:dry-run": "wrangler deploy --dry-run",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.1.4",
+    "prettier": "3.9.6",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11",
+    "wrangler": "4.129.0"
+  }
+}
