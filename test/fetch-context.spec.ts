@@ -37,7 +37,7 @@ describe("Workers fetch receiver", () => {
     const fetcher = receiverCheckedFetch();
     vi.stubGlobal("fetch", fetcher);
     expect(
-      (await new OpenAIStatusClient().fetchSnapshot()).components,
+      (await new OpenAIStatusClient().fetchSnapshot(() => true)).components,
     ).toHaveLength(1);
     const event: IncidentUpdateEvent = {
       type: "incident-update",

@@ -1,11 +1,8 @@
 import type {
   IncidentMatchMode,
-  IncidentRevisionRecord,
   IncidentUpdateEvent,
   StatusIncident,
 } from "../types";
-import { sha256 } from "../utils/hash";
-import { isWithinLookback } from "../utils/time";
 
 const NON_API_SURFACES = [
   "codex cloud",
@@ -37,93 +34,56 @@ export function isRelevantIncident(
   return containsWord(stripped, "codex");
 }
 
-export async function fingerprintUpdate(
-  incident: StatusIncident,
-  update: StatusIncident["incident_updates"][number],
-): Promise<string> {
-  return sha256(
-    [
-      incident.id,
-      normalizeText(incident.name),
-      update.id,
-      update.status,
-      update.updated_at,
-      normalizeText(update.body),
-    ].join("\n"),
-  );
-}
-
-export async function collectIncidentChanges(
+export function collectIncidentChanges(
   incidents: StatusIncident[],
   mode: IncidentMatchMode,
-  previous: Record<string, IncidentRevisionRecord>,
-  now: Date,
-  lookbackDays: number,
-  latestOnly = false,
-): Promise<{
+  previous: Record<string, string>,
+  recovering = false,
+): {
   events: IncidentUpdateEvent[];
-  revisions: Record<string, IncidentRevisionRecord>;
+  activeIncidents: Record<string, string>;
   candidateCount: number;
-}> {
-  const revisions = { ...previous };
+} {
+  const activeIncidents: Record<string, string> = {};
   const events: IncidentUpdateEvent[] = [];
   let candidateCount = 0;
-  for (const incident of incidents.filter((item) =>
-    isRelevantIncident(item, mode),
+  for (const incident of [...incidents].sort((a, b) =>
+    a.id.localeCompare(b.id),
   )) {
-    const updates = latestOnly
-      ? [...incident.incident_updates]
-          .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))
-          .slice(0, 1)
-      : incident.incident_updates;
-    for (const update of updates) {
-      if (!isWithinLookback(update.updated_at, now, lookbackDays)) continue;
-      candidateCount += 1;
-      const fingerprint = await fingerprintUpdate(incident, update);
-      const existing = previous[update.id];
-      revisions[update.id] = { fingerprint, eventAt: update.updated_at };
-      if (!existing || existing.fingerprint !== fingerprint) {
-        events.push({
-          type: "incident-update",
-          incidentId: incident.id,
-          incidentName: incident.name,
-          incidentStatus: incident.status,
-          updateId: update.id,
-          updateStatus: update.status,
-          body: update.body,
-          eventAt: update.updated_at,
-          shortlink: incident.shortlink,
-          revised: Boolean(existing),
-        });
-      }
+    if (!isRelevantIncident(incident, mode)) continue;
+    const closed = ["resolved", "postmortem"].includes(incident.status);
+    const existing = previous[incident.id];
+    // Closed history is only relevant to an incident already being tracked.
+    if ((closed || recovering) && !existing) continue;
+    const update = [...incident.incident_updates].sort(
+      (a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at),
+    )[0];
+    if (!update) continue;
+    candidateCount += 1;
+    const updatedAt = incident.updated_at ?? update.updated_at;
+    if (!closed && !recovering) activeIncidents[incident.id] = updatedAt;
+    if (existing !== updatedAt) {
+      events.push({
+        type: "incident-update",
+        incidentId: incident.id,
+        incidentName: incident.name,
+        incidentStatus: incident.status,
+        updateId: update.id,
+        updateStatus: update.status,
+        body: update.body,
+        eventAt: update.updated_at,
+        shortlink: incident.shortlink,
+        revised: false,
+      });
     }
   }
   return {
     events: events.sort(
       (left, right) => Date.parse(left.eventAt) - Date.parse(right.eventAt),
     ),
-    revisions: pruneRevisions(revisions, now, lookbackDays),
+    activeIncidents,
     candidateCount,
   };
-}
-
-export function pruneRevisions(
-  revisions: Record<string, IncidentRevisionRecord>,
-  now: Date,
-  lookbackDays: number,
-  limit = 500,
-): Record<string, IncidentRevisionRecord> {
-  return Object.fromEntries(
-    Object.entries(revisions)
-      .filter(([, record]) =>
-        isWithinLookback(record.eventAt, now, lookbackDays),
-      )
-      .sort(
-        ([, left], [, right]) =>
-          Date.parse(right.eventAt) - Date.parse(left.eventAt),
-      )
-      .slice(0, limit),
-  );
 }
 
 function normalizeText(value: string): string {

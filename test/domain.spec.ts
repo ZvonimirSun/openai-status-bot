@@ -2,9 +2,7 @@ import { describe, expect, it } from "vitest";
 import { selectTargetComponent, statusLabel } from "../src/domain/component";
 import {
   collectIncidentChanges,
-  fingerprintUpdate,
   isRelevantIncident,
-  pruneRevisions,
 } from "../src/domain/incidents";
 import { buildNotificationParts, utf8Length } from "../src/domain/message";
 import { component, incident } from "./helpers";
@@ -45,47 +43,57 @@ describe("incident matching and revisions", () => {
     expect(isRelevantIncident(general, "balanced")).toBe(true);
   });
 
-  it("changes the fingerprint when an update is revised", async () => {
+  it("ignores body edits without a timestamp change", () => {
     const first = incident("Initial body");
     const revised = incident("Revised body");
-    expect(await fingerprintUpdate(first, first.incident_updates[0]!)).not.toBe(
-      await fingerprintUpdate(revised, revised.incident_updates[0]!),
-    );
+    const baseline = collectIncidentChanges([first], "balanced", {});
+    expect(
+      collectIncidentChanges([revised], "balanced", baseline.activeIncidents)
+        .events,
+    ).toEqual([]);
   });
 
-  it("detects a revision and prunes old/excess records", async () => {
-    const now = new Date("2026-09-06T03:00:00.000Z");
+  it("tracks one timestamp per active incident and removes closed history", () => {
     const first = incident("Initial body");
-    const initial = await collectIncidentChanges(
-      [first],
-      "balanced",
-      {},
-      now,
-      30,
-    );
-    const revised = incident("Revised body");
-    const changes = await collectIncidentChanges(
+    const initial = collectIncidentChanges([first], "balanced", {});
+    const revised = incident("Revised body", "2026-09-06T03:00:00.000Z");
+    const changes = collectIncidentChanges(
       [revised],
       "balanced",
-      initial.revisions,
-      now,
-      30,
+      initial.activeIncidents,
     );
     expect(changes.events).toHaveLength(1);
-    expect(changes.events[0]?.revised).toBe(true);
-    expect(
-      pruneRevisions(
-        {
-          old: { fingerprint: "old", eventAt: "2025-01-01T00:00:00.000Z" },
-          current: { fingerprint: "current", eventAt: now.toISOString() },
-        },
-        now,
-        30,
-        1,
-      ),
-    ).toEqual({
-      current: { fingerprint: "current", eventAt: now.toISOString() },
+    expect(changes.activeIncidents).toEqual({
+      "incident-1": "2026-09-06T03:00:00.000Z",
     });
+    const closed = {
+      ...incident("Recovered", "2026-09-06T04:00:00.000Z"),
+      status: "resolved",
+    };
+    const recovery = collectIncidentChanges(
+      [closed],
+      "balanced",
+      changes.activeIncidents,
+      true,
+    );
+    expect(recovery.events).toHaveLength(1);
+    expect(recovery.activeIncidents).toEqual({});
+    expect(collectIncidentChanges([closed], "balanced", {}).events).toEqual([]);
+  });
+
+  it("uses incident updated_at and reports only the latest update", () => {
+    const current = { ...incident(), updated_at: "2026-09-06T05:00:00.000Z" };
+    current.incident_updates.push(
+      ...incident("Latest", "2026-09-06T04:00:00.000Z").incident_updates,
+    );
+    const result = collectIncidentChanges([current], "balanced", {});
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0]?.body).toBe("Latest");
+    expect(result.activeIncidents[current.id]).toBe(current.updated_at);
+    expect(
+      collectIncidentChanges([], "balanced", result.activeIncidents)
+        .activeIncidents,
+    ).toEqual({});
   });
 });
 

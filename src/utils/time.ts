@@ -14,14 +14,3 @@ export function formatDateTime(value: string, timeZone: string): string {
     .format(date)
     .replaceAll("/", "-");
 }
-
-export function isWithinLookback(
-  value: string,
-  now: Date,
-  days: number,
-): boolean {
-  const timestamp = Date.parse(value);
-  return (
-    Number.isFinite(timestamp) && timestamp >= now.getTime() - days * 86_400_000
-  );
-}

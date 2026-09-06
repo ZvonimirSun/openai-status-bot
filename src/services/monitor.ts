@@ -4,7 +4,6 @@ import type { Notifier } from "../clients/notifiers";
 import type { TranslationClient } from "../clients/translation-client";
 import type {
   ComponentStatusChangedEvent,
-  IncidentRevisionRecord,
   MonitorEvent,
   MonitorRunResult,
   MonitorStateV1,
@@ -53,39 +52,39 @@ export class MonitorService {
         };
       }
       const loaded = await this.repository.load();
-      const snapshot = await this.client.fetchSnapshot();
+      const previousStatus = loaded?.component.status ?? null;
+      const snapshot = await this.client.fetchSnapshot((components) => {
+        const current = selectTargetComponent(
+          components,
+          this.config.targetComponentName,
+        );
+        return (
+          current.status !== "operational" ||
+          (isCron &&
+            previousStatus !== null &&
+            previousStatus !== "operational")
+        );
+      });
       const component = selectTargetComponent(
         snapshot.components,
         this.config.targetComponentName,
       );
-      const previousStatus = loaded?.component.status ?? null;
       const bootstrap = loaded === null;
-      const previousRevisions = loaded?.incidentRevisions ?? {};
-      let revisions: Record<string, IncidentRevisionRecord> = previousRevisions;
+      const previousIncidents = loaded?.activeIncidents ?? {};
+      const recovering = component.status === "operational";
+      let activeIncidents = recovering ? {} : previousIncidents;
       let incidentEvents: MonitorEvent[] = [];
       let candidateCount = 0;
       if (snapshot.incidents) {
-        const changes = await collectIncidentChanges(
-          isCron
-            ? snapshot.incidents
-            : snapshot.incidents.filter(
-                (incident) =>
-                  !["resolved", "postmortem"].includes(incident.status),
-              ),
+        const changes = collectIncidentChanges(
+          snapshot.incidents,
           this.config.incidentMatchMode,
-          isCron ? previousRevisions : {},
-          observed,
-          this.config.incidentLookbackDays,
-          !isCron,
+          isCron ? previousIncidents : {},
+          recovering,
         );
-        revisions = changes.revisions;
+        activeIncidents = changes.activeIncidents;
         candidateCount = changes.candidateCount;
-        incidentEvents =
-          !isCron ||
-          loaded?.incidentsInitialized ||
-          this.config.notifyOnBootstrap
-            ? changes.events
-            : [];
+        incidentEvents = changes.events;
       }
 
       const componentChanged =
@@ -129,16 +128,13 @@ export class MonitorService {
         ...(loaded?.lastNotificationId
           ? { lastNotificationId: loaded.lastNotificationId }
           : {}),
-        incidentsInitialized: Boolean(
-          loaded?.incidentsInitialized || snapshot.incidents !== null,
-        ),
         component: {
           id: component.id,
           name: component.name,
           status: component.status,
           updatedAt: component.updated_at,
         },
-        incidentRevisions: revisions,
+        activeIncidents,
       };
       const changed = events.length > 0;
       const translatedEvents =
@@ -171,7 +167,8 @@ export class MonitorService {
           !committed &&
           (changed ||
             bootstrap ||
-            nextState.incidentsInitialized !== loaded?.incidentsInitialized)
+            JSON.stringify(activeIncidents) !==
+              JSON.stringify(loaded?.activeIncidents))
         ) {
           await this.repository.save(nextState);
           committed = true;

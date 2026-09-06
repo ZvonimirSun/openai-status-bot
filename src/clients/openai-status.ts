@@ -16,27 +16,32 @@ export class OpenAIStatusClient {
     private readonly signal?: AbortSignal,
   ) {}
 
-  async fetchSnapshot(): Promise<StatusSnapshot> {
-    const [componentsResult, incidentsResult] = await Promise.allSettled([
-      this.fetchComponents(),
-      this.fetchIncidents(),
-    ]);
-    if (componentsResult.status === "rejected") throw componentsResult.reason;
-    if (incidentsResult.status === "rejected") {
+  async fetchSnapshot(
+    needsIncidents: (components: StatusComponent[]) => boolean = (components) =>
+      components.some(
+        (item) => item.name === "Codex API" && item.status !== "operational",
+      ),
+  ): Promise<StatusSnapshot> {
+    const components = await this.fetchComponents();
+    if (!needsIncidents(components)) {
+      return { components, incidents: null, incidentFeedDegraded: false };
+    }
+    try {
+      return {
+        components,
+        incidents: await this.fetchIncidents(),
+        incidentFeedDegraded: false,
+      };
+    } catch {
       console.warn(
         JSON.stringify({ source: "openai-incidents", result: "degraded" }),
       );
       return {
-        components: componentsResult.value,
+        components,
         incidents: null,
         incidentFeedDegraded: true,
       };
     }
-    return {
-      components: componentsResult.value,
-      incidents: incidentsResult.value,
-      incidentFeedDegraded: false,
-    };
   }
 
   private async fetchComponents(): Promise<StatusComponent[]> {
@@ -126,7 +131,10 @@ function isStatusIncident(value: unknown): value is StatusIncident {
     !isRecord(value) ||
     typeof value.id !== "string" ||
     typeof value.name !== "string" ||
-    typeof value.status !== "string"
+    typeof value.status !== "string" ||
+    (value.updated_at !== undefined &&
+      (typeof value.updated_at !== "string" ||
+        !Number.isFinite(Date.parse(value.updated_at))))
   ) {
     return false;
   }
@@ -150,6 +158,7 @@ function isIncidentUpdate(value: unknown): value is IncidentUpdate {
     typeof value.status === "string" &&
     typeof value.body === "string" &&
     typeof value.updated_at === "string" &&
+    Number.isFinite(Date.parse(value.updated_at)) &&
     (typeof value.created_at === "string" ||
       value.created_at === null ||
       value.created_at === undefined)

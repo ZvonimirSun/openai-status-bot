@@ -4,7 +4,6 @@ export interface AppConfig {
   targetComponentName: string;
   incidentMatchMode: IncidentMatchMode;
   displayTimeZone: string;
-  incidentLookbackDays: number;
   notifyOnBootstrap: boolean;
   adminToken: string | null;
   translationApiBaseUrl: string;
@@ -18,7 +17,6 @@ export function loadConfig(env: Env): AppConfig {
     targetComponentName: env.TARGET_COMPONENT_NAME?.trim() || "Codex API",
     incidentMatchMode: parseMatchMode(env.INCIDENT_MATCH_MODE),
     displayTimeZone: env.DISPLAY_TIME_ZONE?.trim() || "Asia/Shanghai",
-    incidentLookbackDays: parsePositiveInteger(env.INCIDENT_LOOKBACK_DAYS, 30),
     notifyOnBootstrap: parseBoolean(env.NOTIFY_ON_BOOTSTRAP, false),
     adminToken: env.CHECK_TOKEN?.trim() || null,
     translationApiBaseUrl:
@@ -42,14 +40,6 @@ function parseMatchMode(value: string | undefined): IncidentMatchMode {
   return value === "strict" || value === "broad" || value === "balanced"
     ? value
     : "balanced";
-}
-
-function parsePositiveInteger(
-  value: string | number | undefined,
-  fallback: number,
-): number {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function parseBoolean(

@@ -61,6 +61,91 @@ describe("MonitorService", () => {
     expect(kv.puts).toBe(1);
   });
 
+  it("fetches only components while healthy, including read-only checks", async () => {
+    const fetcher = vi.fn(async (_input: RequestInfo | URL) =>
+      jsonResponse({ components: [component()] }),
+    );
+    const translator = new TranslationClient({
+      baseUrl: "https://example.com",
+      apiKey: null,
+      model: null,
+      style: "chat-completions",
+    });
+    const service = new MonitorService(
+      loadConfig({}),
+      new OpenAIStatusClient(fetcher),
+      new MonitorStateRepository(kv.asNamespace()),
+      notifier,
+      translator,
+    );
+    await service.run("cron");
+    await service.run("cron");
+    await service.run("admin-check");
+    await service.run("telegram-check");
+    expect(fetcher).toHaveBeenCalledTimes(4);
+    expect(
+      fetcher.mock.calls.every(([url]) =>
+        String(url).includes("components.json"),
+      ),
+    ).toBe(true);
+    expect(kv.puts).toBe(1);
+    expect(JSON.parse(kv.values.get(STATE_KEY)!)).toMatchObject({
+      activeIncidents: {},
+    });
+  });
+
+  it("preserves active timestamps when the incident feed fails", async () => {
+    await createService(kv, notifier, "major_outage", [incident()]).run("cron");
+    const before = kv.values.get(STATE_KEY);
+    const failed = await createService(kv, notifier, "major_outage", null).run(
+      "cron",
+    );
+    expect(failed.incidentFeedDegraded).toBe(true);
+    expect(kv.values.get(STATE_KEY)).toBe(before);
+    await createService(kv, notifier, "major_outage", [incident()]).run("cron");
+    expect(kv.puts).toBe(1);
+    expect(sent).toHaveLength(0);
+  });
+
+  it("includes tracked resolution details once and clears active incidents", async () => {
+    await createService(kv, notifier, "major_outage", [incident()]).run("cron");
+    const closed = {
+      ...incident("Recovered", "2026-09-06T03:00:00.000Z"),
+      status: "resolved",
+    };
+    const result = await createService(kv, notifier, "operational", [
+      closed,
+    ]).run("cron");
+    expect(result.events).toHaveLength(2);
+    expect(result.events[1]).toMatchObject({ body: "Recovered" });
+    expect(JSON.parse(kv.values.get(STATE_KEY)!).activeIncidents).toEqual({});
+    const puts = kv.puts;
+    await createService(kv, notifier, "operational", [closed]).run("cron");
+    expect(kv.puts).toBe(puts);
+    expect(sent).toHaveLength(1);
+  });
+
+  it("clears recovery state even when incident details are unavailable", async () => {
+    await createService(kv, notifier, "major_outage", [incident()]).run("cron");
+    const result = await createService(kv, notifier, "operational", null).run(
+      "cron",
+    );
+    expect(result.notified).toBe(true);
+    expect(result.events).toHaveLength(1);
+    expect(JSON.parse(kv.values.get(STATE_KEY)!).activeIncidents).toEqual({});
+  });
+
+  it("removes disappeared events without sending a false recovery notification", async () => {
+    await createService(kv, notifier, "major_outage", [incident()]).run("cron");
+    const result = await createService(kv, notifier, "major_outage", []).run(
+      "cron",
+    );
+    expect(result.changed).toBe(false);
+    expect(result.committed).toBe(true);
+    expect(sent).toHaveLength(0);
+    expect(JSON.parse(kv.values.get(STATE_KEY)!).activeIncidents).toEqual({});
+  });
+
   it("notifies and commits status degradation and recovery", async () => {
     await createService(kv, notifier, "operational", []).run("cron");
     const degraded = await createService(
@@ -81,16 +166,16 @@ describe("MonitorService", () => {
     });
   });
 
-  it("notifies when an existing incident update is revised", async () => {
-    await createService(kv, notifier, "operational", [incident("Initial")]).run(
-      "cron",
-    );
-    const result = await createService(kv, notifier, "operational", [
-      incident("Revised"),
+  it("notifies when an active incident timestamp changes", async () => {
+    await createService(kv, notifier, "major_outage", [
+      incident("Initial"),
+    ]).run("cron");
+    const result = await createService(kv, notifier, "major_outage", [
+      incident("Revised", "2026-09-06T03:00:00.000Z"),
     ]).run("cron");
     expect(result.events[0]).toMatchObject({
       type: "incident-update",
-      revised: true,
+      body: "Revised",
     });
   });
 
@@ -106,22 +191,23 @@ describe("MonitorService", () => {
     expect(kv.values.get(STATE_KEY)).toBe(before);
   });
 
-  it("establishes the incident baseline silently after an initial feed failure", async () => {
-    await createService(kv, notifier, "operational", null).run("cron");
+  it("reports current details after an initial feed failure without historical notifications", async () => {
+    await createService(kv, notifier, "major_outage", null).run("cron");
     expect(JSON.parse(kv.values.get(STATE_KEY)!)).toMatchObject({
-      incidentsInitialized: false,
+      activeIncidents: {},
     });
-    const recovered = await createService(kv, notifier, "operational", [
-      incident("Historical"),
+    const recovered = await createService(kv, notifier, "major_outage", [
+      incident("Current"),
+      { ...incident("Historical"), id: "closed", status: "resolved" },
     ]).run("cron");
-    expect(recovered.changed).toBe(false);
+    expect(recovered.changed).toBe(true);
     expect(recovered.committed).toBe(true);
-    expect(sent).toHaveLength(0);
+    expect(sent).toHaveLength(1);
     expect(JSON.parse(kv.values.get(STATE_KEY)!)).toMatchObject({
-      incidentsInitialized: true,
+      activeIncidents: { "incident-1": "2026-09-06T02:05:00.000Z" },
     });
-    await createService(kv, notifier, "operational", [
-      incident("New revision"),
+    await createService(kv, notifier, "major_outage", [
+      incident("Current"),
     ]).run("cron");
     expect(sent).toHaveLength(1);
   });

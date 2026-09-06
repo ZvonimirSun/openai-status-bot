@@ -27,6 +27,7 @@ export interface StatusIncident {
   id: string;
   name: string;
   status: string;
+  updated_at?: string;
   shortlink: string | null;
   incident_updates: IncidentUpdate[];
 }
@@ -34,7 +35,6 @@ export interface StatusIncident {
 export interface MonitorStateV1 {
   schemaVersion: 1;
   initializedAt: string;
-  incidentsInitialized: boolean;
   lastNotificationId?: string;
   component: {
     id: string;
@@ -42,12 +42,7 @@ export interface MonitorStateV1 {
     status: string;
     updatedAt: string | null;
   };
-  incidentRevisions: Record<string, IncidentRevisionRecord>;
-}
-
-export interface IncidentRevisionRecord {
-  fingerprint: string;
-  eventAt: string;
+  activeIncidents: Record<string, string>;
 }
 
 export interface ComponentStatusChangedEvent {
@@ -97,7 +92,6 @@ export interface Env {
   TARGET_COMPONENT_NAME?: string;
   INCIDENT_MATCH_MODE?: string;
   DISPLAY_TIME_ZONE?: string;
-  INCIDENT_LOOKBACK_DAYS?: string | number;
   NOTIFY_ON_BOOTSTRAP?: string | boolean;
   WECOM_WEBHOOK_URL?: string;
   CHECK_TOKEN?: string;

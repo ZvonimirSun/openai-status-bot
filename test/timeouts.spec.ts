@@ -19,7 +19,7 @@ describe("shared request budget", () => {
     await expect(
       new OpenAIStatusClient(fetcher, controller.signal).fetchSnapshot(),
     ).rejects.toThrow();
-    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
   it("falls back immediately instead of starting a new translation time budget", async () => {

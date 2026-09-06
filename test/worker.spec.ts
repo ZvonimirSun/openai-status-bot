@@ -51,7 +51,7 @@ describe("worker handlers", () => {
         const url = String(input);
         expect(init?.signal).toBeInstanceOf(AbortSignal);
         if (url.includes("components"))
-          return jsonResponse({ components: [component()] });
+          return jsonResponse({ components: [component("major_outage")] });
         if (url.includes("incidents"))
           return jsonResponse({
             incidents: [
