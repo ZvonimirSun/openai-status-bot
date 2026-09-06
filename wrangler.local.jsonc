@@ -1,0 +1,7 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // Local development and tests only. Never used for production deployment.
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-06",
+  "kv_namespaces": [{ "binding": "STATUS_KV" }],
+}

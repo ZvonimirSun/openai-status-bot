@@ -86,14 +86,9 @@ curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
 
 ## Cloudflare 首次部署
 
-1. 创建 KV namespace：
+1. 在 Dashboard 创建 Worker（已有 Worker 无需重建），创建或选择 KV namespace。
 
-```bash
-npx wrangler login
-npx wrangler kv namespace create STATUS_KV
-```
-
-2. 将返回的 namespace ID 填入 `wrangler.jsonc` 的 `STATUS_KV` binding。已有临时 Worker 的情况下，直接填写原来 `STATUS_KV` 使用的 namespace ID。
+2. 在 Worker 的 Bindings 中添加 KV 绑定，变量名为 `STATUS_KV`。Namespace ID 不写入代码。在面板设置兼容日期、域名和日志，并在 Cron Triggers 中添加 `*/5 * * * *`。这些配置不会由部署脚本创建或修改。
 
 3. 在 Cloudflare Dashboard 的 Worker `Settings > Variables and Secrets` 中配置：
 
@@ -109,14 +104,16 @@ TRANSLATION_MODEL=...
 
 普通配置项 `TARGET_COMPONENT_NAME`、`INCIDENT_MATCH_MODE`、`DISPLAY_TIME_ZONE`、`INCIDENT_LOOKBACK_DAYS`、`NOTIFY_ON_BOOTSTRAP`、`TRANSLATION_API_BASE_URL`、`TRANSLATION_API_STYLE` 也在 Dashboard 中按需覆盖。
 
-4. 检查并部署代码：
+4. 配置下面的构建环境变量，然后检查并仅部署代码：
 
 ```bash
 npm run check
-npx wrangler deploy
+npm run deploy
 ```
 
-`wrangler.jsonc` 设置了 `keep_vars: true`，并且不包含生产 `vars` 值。后续 Wrangler 或 Cloudflare Builds 部署不会删除或覆盖 Dashboard 中维护的环境变量。不要在部署命令中添加 `--var` 或 `--secrets-file`。
+仓库没有生产 Wrangler 配置。部署脚本使用 Cloudflare 官方 `PUT /accounts/{account_id}/workers/scripts/{script_name}/content` 接口，只更新代码，不提交任何 KV、变量、Cron、域名、兼容日期或日志配置。不要再使用 `npx wrangler deploy`，也不要用本地测试配置进行部署。`npm run deploy:dry-run` 只离线打包，不调用 Cloudflare API。
+
+本地开发和测试单独使用 `wrangler.local.jsonc`；其中没有远程 Namespace ID，部署脚本也不读取它。
 
 首次 Cron 只建立基线，不发送历史事件。状态统一存储在 KV key `monitor:v1:openai:codex-api`。
 
@@ -163,18 +160,25 @@ Cron 仅对新增事件或修订内容调用翻译；HTTP 和 Telegram 只读查
 
 ## Cloudflare Workers Builds
 
-先通过 Wrangler 创建并部署现有 Worker，然后在 Cloudflare Dashboard 的 `Settings > Builds` 连接 GitHub 仓库：
+在 Cloudflare Dashboard 的 `Settings > Builds` 连接 GitHub 仓库，并配置：
 
-| 设置                          | 值                             |
-| ----------------------------- | ------------------------------ |
-| Root directory                | `/`                            |
-| Production branch             | `main`                         |
-| Build command                 | `npm run check`                |
-| Deploy command                | `npx wrangler deploy`          |
-| Non-production branch builds  | Enabled                        |
-| Non-production deploy command | `npx wrangler versions upload` |
+| 设置                         | 值               |
+| ---------------------------- | ---------------- |
+| Root directory               | `/`              |
+| Production branch            | `main`           |
+| Build command                | `npm run check`  |
+| Deploy command               | `npm run deploy` |
+| Non-production branch builds | Disabled         |
 
-Dashboard Worker 名称必须与 `wrangler.jsonc` 的 `openai-codex-status-wecom` 一致。生产变量和 Runtime secrets 只在 Dashboard 维护；Cloudflare Builds 只部署代码和声明式 binding。
+在 **Builds 的变量/Secrets** 中设置部署凭据（不是 Worker 运行时变量）：
+
+- `CLOUDFLARE_ACCOUNT_ID`：目标账户 ID。
+- `CLOUDFLARE_API_TOKEN`：具有目标账户 Workers Scripts Edit 权限的 API Token，设为 Secret。若构建环境已提供则无需重复设置。
+- `CLOUDFLARE_WORKER_NAME`：已有 Worker 名称。Workers Builds 提供 `WRANGLER_CI_OVERRIDE_NAME` 时优先使用其值。
+
+这些信息只用于选择部署目标和认证，不属于 Worker 业务配置。生产 KV 绑定、环境变量、Secret、Cron、域名和日志全部在面板管理。需要 HTTP 查询或 Telegram `/check` 时，在面板启用 workers.dev 或绑定可访问的自定义域名。
+
+接口语义参考 [Cloudflare 官方 SDK：仅更新代码](https://github.com/cloudflare/cloudflare-typescript/blob/main/src/resources/workers/scripts/content.ts)。脚本要求目标 Worker 和 `STATUS_KV` 绑定已存在，不会自动创建或覆盖它们。
 
 ## 投递语义
 
@@ -190,4 +194,4 @@ Cron 在发送前持久化待投递内容，并为每个渠道/分片写入独�
 
 ## 免费套餐用量
 
-默认每天 288 次 Cron，约 576 次状态源 HTTP 请求。无变化时通常每次读取 KV 2 次（已有完成投递记录时为 3 次），不调用翻译、不通知、不写 KV。KV 写入和回执仅随真实变化增加，失败投递仅在后续 Cron 重试。人工查询另有一次 KV 读取、状态源请求，以及配置完整时的翻译调用。环境变量仍只在 Cloudflare Dashboard 维护，`keep_vars: true` 保持不变。
+按面板设置每 5 分钟运行，默认每天 288 次 Cron，约 576 次状态源 HTTP 请求。无变化时通常每次读取 KV 2 次（已有完成投递记录时为 3 次），不调用翻译、不通知、不写 KV。KV 写入和回执仅随真实变化增加，失败投递仅在后续 Cron 重试。人工查询另有一次 KV 读取、状态源请求，以及配置完整时的翻译调用。生产配置全部在 Cloudflare Dashboard 维护，部署只更新代码。
