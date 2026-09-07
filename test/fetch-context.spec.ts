@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { OpenAIStatusClient } from "../src/clients/openai-status";
 import { TranslationClient } from "../src/clients/translation-client";
 import { TelegramNotifier, WeComNotifier } from "../src/clients/notifiers";
-import worker, { runMonitor } from "../src/index";
+import worker, { runCron } from "../src/index";
 import type { IncidentUpdateEvent } from "../src/types";
 import { component, jsonResponse, MemoryKv } from "./helpers";
 
@@ -15,8 +15,8 @@ describe("Workers fetch receiver", () => {
       const url = String(input);
       if (url.includes("components.json"))
         return jsonResponse({ components: [component()] });
-      if (url.includes("incidents.json"))
-        return jsonResponse({ incidents: [] });
+      if (url.includes("/proxy/"))
+        return jsonResponse({ summary: { ongoing_incidents: [] } });
       if (url.includes("chat/completions"))
         return jsonResponse({
           choices: [
@@ -36,9 +36,10 @@ describe("Workers fetch receiver", () => {
   it("preserves the global receiver for every external client", async () => {
     const fetcher = receiverCheckedFetch();
     vi.stubGlobal("fetch", fetcher);
+    expect(await new OpenAIStatusClient().fetchComponents()).toHaveLength(1);
     expect(
-      (await new OpenAIStatusClient().fetchSnapshot(() => true)).components,
-    ).toHaveLength(1);
+      await new OpenAIStatusClient().fetchRelevantIncidents("codex-api-id"),
+    ).toEqual([]);
     const event: IncidentUpdateEvent = {
       type: "incident-update",
       incidentId: "i",
@@ -73,7 +74,7 @@ describe("Workers fetch receiver", () => {
       TELEGRAM_CHAT_ID: "123",
       TELEGRAM_WEBHOOK_SECRET: "secret",
     };
-    const baseline = await runMonitor(env, "cron");
+    const baseline = await runCron(env);
     expect(baseline.committed).toBe(true);
     expect(kv.puts).toBe(1);
     const response = await worker.fetch(

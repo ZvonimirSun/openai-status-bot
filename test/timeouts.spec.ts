@@ -17,7 +17,7 @@ describe("shared request budget", () => {
       },
     );
     await expect(
-      new OpenAIStatusClient(fetcher, controller.signal).fetchSnapshot(),
+      new OpenAIStatusClient(fetcher, controller.signal).fetchComponents(),
     ).rejects.toThrow();
     expect(fetcher).toHaveBeenCalledTimes(1);
   });

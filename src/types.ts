@@ -5,9 +5,6 @@ export type ComponentStatus =
   | "major_outage"
   | "under_maintenance";
 
-export type IncidentMatchMode = "strict" | "balanced" | "broad";
-export type RunTrigger = "cron" | "admin-check" | "telegram-check";
-
 export interface StatusComponent {
   id: string;
   name: string;
@@ -15,21 +12,43 @@ export interface StatusComponent {
   updated_at: string | null;
 }
 
-export interface IncidentUpdate {
-  id: string;
-  status: string;
-  body: string;
-  updated_at: string;
-  created_at: string | null;
+export interface WidgetAffectedComponent {
+  component_id: string;
 }
 
-export interface StatusIncident {
+export interface WidgetIncident {
   id: string;
   name: string;
   status: string;
-  updated_at?: string;
-  shortlink: string | null;
-  incident_updates: IncidentUpdate[];
+  url?: string | null;
+  last_update_at?: string;
+  last_update_message?: string;
+  affected_components?: WidgetAffectedComponent[];
+  component_impacts?: WidgetAffectedComponent[];
+  updates?: {
+    published_at: string;
+    message_string?: string;
+    message?: { markdown: string };
+  }[];
+}
+
+export interface CurrentIncident {
+  id: string;
+  name: string;
+  status: string;
+  lastUpdateAt: string;
+  message: string;
+  url: string | null;
+  translatedName?: string;
+  translatedMessage?: string;
+}
+
+export interface CurrentStatusResult {
+  ok: true;
+  checkedAt: string;
+  component: MonitorStateV1["component"];
+  incidents: CurrentIncident[];
+  incidentFeedDegraded: boolean;
 }
 
 export interface MonitorStateV1 {
@@ -74,7 +93,7 @@ export type MonitorEvent = ComponentStatusChangedEvent | IncidentUpdateEvent;
 
 export interface MonitorRunResult {
   ok: boolean;
-  trigger: RunTrigger;
+  trigger: "cron";
   bootstrap: boolean;
   changed: boolean;
   notified: boolean;
@@ -90,7 +109,6 @@ export interface MonitorRunResult {
 export interface Env {
   STATUS_KV?: KVNamespace;
   TARGET_COMPONENT_NAME?: string;
-  INCIDENT_MATCH_MODE?: string;
   DISPLAY_TIME_ZONE?: string;
   NOTIFY_ON_BOOTSTRAP?: string | boolean;
   WECOM_WEBHOOK_URL?: string;

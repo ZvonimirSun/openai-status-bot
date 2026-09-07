@@ -1,4 +1,5 @@
-import type { MonitorEvent } from "../types";
+import type { MonitorEvent, CurrentStatusResult } from "../types";
+import { toIncidentEvent } from "./incidents";
 import { statusLabel } from "./component";
 import { formatDateTime } from "../utils/time";
 
@@ -10,29 +11,52 @@ export function buildNotificationParts(
   observedAt: string,
   timeZone: string,
 ): string[] {
+  const recovering = events.some(
+    (event) =>
+      event.type === "component-status-changed" &&
+      event.previousStatus !== null &&
+      event.currentStatus === "operational",
+  );
   const header = [
-    "OpenAI Codex API 状态通知",
+    currentStatus === "operational"
+      ? recovering
+        ? "Codex API 已恢复"
+        : "Codex API 当前状态"
+      : "Codex API 状态异常",
     `当前状态：${statusLabel(currentStatus)}`,
     `检测时间：${formatDateTime(observedAt, timeZone)} ${timeZone}`,
   ].join("\n");
-  const blocks = events.map((event) => formatEvent(event, timeZone));
+  const blocks = events
+    .filter(
+      (event) =>
+        currentStatus !== "operational" ||
+        event.type === "component-status-changed",
+    )
+    .map((event) => formatEvent(event, timeZone));
   return chunkBlocks(header, blocks, MAX_BYTES);
 }
 
-export function buildCheckReply(
-  status: string | null,
-  changed: boolean,
-  eventCount: number,
-  observedAt: string,
+export function buildCurrentStatusReply(
+  result: CurrentStatusResult,
   timeZone: string,
 ): string {
-  return [
-    "Codex API 实时检查完成",
-    `当前状态：${status ? statusLabel(status) : "检查失败"}`,
-    `查询结果：${changed ? `发现 ${eventCount} 项相关信息` : "未发现活动事件或组件变化"}`,
-    "本次查询不更新监控基线，不触发状态通知。",
-    `检测时间：${formatDateTime(observedAt, timeZone)} ${timeZone}`,
+  const header = [
+    `${result.component.name} 当前状态：${statusLabel(result.component.status)}`,
+    `检测时间：${formatDateTime(result.checkedAt, timeZone)} ${timeZone}`,
   ].join("\n");
+  if (result.component.status === "operational") return header;
+  if (result.incidentFeedDegraded) return `${header}\n当前事件详情暂不可用`;
+  const parts = chunkBlocks(
+    header,
+    result.incidents.map((incident) =>
+      formatEvent(toIncidentEvent(incident), timeZone),
+    ),
+    MAX_BYTES,
+  );
+  return (
+    (parts[0] ?? `${header}\n暂无关联事件详情`) +
+    (parts.length > 1 ? "\n其余事件：https://status.openai.com/" : "")
+  );
 }
 
 export function utf8Length(value: string): number {

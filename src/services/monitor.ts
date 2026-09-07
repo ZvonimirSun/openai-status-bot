@@ -7,10 +7,10 @@ import type {
   MonitorEvent,
   MonitorRunResult,
   MonitorStateV1,
-  RunTrigger,
+  CurrentStatusResult,
 } from "../types";
 import { selectTargetComponent } from "../domain/component";
-import { collectIncidentChanges } from "../domain/incidents";
+import { collectIncidentChanges, toIncidentEvent } from "../domain/incidents";
 import { buildNotificationParts } from "../domain/message";
 import type {
   MonitorStateRepository,
@@ -21,20 +21,75 @@ export class MonitorService {
   constructor(
     private readonly config: AppConfig,
     private readonly client: OpenAIStatusClient,
-    private readonly repository: MonitorStateRepository,
-    private readonly notifier: Notifier,
+    private readonly repository: MonitorStateRepository | null,
+    private readonly notifier: Notifier | null,
     private readonly translator: TranslationClient,
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  async run(trigger: RunTrigger): Promise<MonitorRunResult> {
-    const isCron = trigger === "cron";
+  private async fetchCurrent() {
+    const component = selectTargetComponent(
+      await this.client.fetchComponents(),
+      this.config.targetComponentName,
+    );
+    if (component.status === "operational")
+      return { component, incidents: [], incidentFeedDegraded: false };
+    try {
+      return {
+        component,
+        incidents: await this.client.fetchRelevantIncidents(component.id),
+        incidentFeedDegraded: false,
+      };
+    } catch {
+      console.warn(
+        JSON.stringify({ source: "openai-widget", result: "degraded" }),
+      );
+      return { component, incidents: null, incidentFeedDegraded: true };
+    }
+  }
+
+  async checkCurrent(): Promise<CurrentStatusResult> {
+    const snapshot = await this.fetchCurrent();
+    const incidents = snapshot.incidents ?? [];
+    const translated =
+      incidents.length > 0
+        ? await this.translator.translate(incidents.map(toIncidentEvent))
+        : [];
+    return {
+      ok: true,
+      checkedAt: this.now().toISOString(),
+      component: {
+        id: snapshot.component.id,
+        name: snapshot.component.name,
+        status: snapshot.component.status,
+        updatedAt: snapshot.component.updated_at,
+      },
+      incidents: incidents.map((incident, index) => {
+        const event = translated[index];
+        return {
+          ...incident,
+          ...(event?.type === "incident-update" && event.translatedIncidentName
+            ? { translatedName: event.translatedIncidentName }
+            : {}),
+          ...(event?.type === "incident-update" && event.translatedBody
+            ? { translatedMessage: event.translatedBody }
+            : {}),
+        };
+      }),
+      incidentFeedDegraded: snapshot.incidentFeedDegraded,
+    };
+  }
+
+  async runCron(): Promise<MonitorRunResult> {
+    if (!this.repository || !this.notifier)
+      throw new Error("Cron dependencies missing");
+    const trigger = "cron";
     const channels = (await this.notifier.channelIds?.()) ?? ["default"];
     const startedAt = Date.now();
     const observed = this.now();
     const observedAt = observed.toISOString();
     try {
-      if (isCron && (await this.resumeDelivery())) {
+      if (await this.resumeDelivery()) {
         const state = await this.repository.load();
         return {
           ok: true,
@@ -53,22 +108,8 @@ export class MonitorService {
       }
       const loaded = await this.repository.load();
       const previousStatus = loaded?.component.status ?? null;
-      const snapshot = await this.client.fetchSnapshot((components) => {
-        const current = selectTargetComponent(
-          components,
-          this.config.targetComponentName,
-        );
-        return (
-          current.status !== "operational" ||
-          (isCron &&
-            previousStatus !== null &&
-            previousStatus !== "operational")
-        );
-      });
-      const component = selectTargetComponent(
-        snapshot.components,
-        this.config.targetComponentName,
-      );
+      const snapshot = await this.fetchCurrent();
+      const component = snapshot.component;
       const bootstrap = loaded === null;
       const previousIncidents = loaded?.activeIncidents ?? {};
       const recovering = component.status === "operational";
@@ -78,9 +119,7 @@ export class MonitorService {
       if (snapshot.incidents) {
         const changes = collectIncidentChanges(
           snapshot.incidents,
-          this.config.incidentMatchMode,
-          isCron ? previousIncidents : {},
-          recovering,
+          previousIncidents,
         );
         activeIncidents = changes.activeIncidents;
         candidateCount = changes.candidateCount;
@@ -104,10 +143,10 @@ export class MonitorService {
       let events = componentEvent
         ? [componentEvent, ...incidentEvents]
         : incidentEvents;
-      if (bootstrap && isCron) {
+      if (bootstrap) {
         events = componentEvent ? [componentEvent] : [];
       }
-      if (bootstrap && this.config.notifyOnBootstrap && isCron) {
+      if (bootstrap && this.config.notifyOnBootstrap) {
         events = [
           {
             type: "component-status-changed",
@@ -138,7 +177,8 @@ export class MonitorService {
       };
       const changed = events.length > 0;
       const translatedEvents =
-        isCron && channels.length === 0
+        channels.length === 0 ||
+        !events.some((event) => event.type === "incident-update")
           ? events
           : await this.translator.translate(events);
       const parts = buildNotificationParts(
@@ -149,30 +189,28 @@ export class MonitorService {
       );
       let notified = false;
       let committed = false;
-      if (isCron) {
-        if (parts.length > 0 && channels.length > 0) {
-          const pending: PendingNotification = {
-            id: crypto.randomUUID(),
-            nextState,
-            parts,
-            channels,
-            delivered: [],
-          };
-          await this.repository.savePending(pending);
-          await this.resumeDelivery(pending);
-          notified = true;
-          committed = true;
-        }
-        if (
-          !committed &&
-          (changed ||
-            bootstrap ||
-            JSON.stringify(activeIncidents) !==
-              JSON.stringify(loaded?.activeIncidents))
-        ) {
-          await this.repository.save(nextState);
-          committed = true;
-        }
+      if (parts.length > 0 && channels.length > 0) {
+        const pending: PendingNotification = {
+          id: crypto.randomUUID(),
+          nextState,
+          parts,
+          channels,
+          delivered: [],
+        };
+        await this.repository.savePending(pending);
+        await this.resumeDelivery(pending);
+        notified = true;
+        committed = true;
+      }
+      if (
+        !committed &&
+        (changed ||
+          bootstrap ||
+          JSON.stringify(activeIncidents) !==
+            JSON.stringify(loaded?.activeIncidents))
+      ) {
+        await this.repository.save(nextState);
+        committed = true;
       }
       const result: MonitorRunResult = {
         ok: true,
@@ -206,6 +244,8 @@ export class MonitorService {
   private async resumeDelivery(
     created?: PendingNotification,
   ): Promise<boolean> {
+    if (!this.repository || !this.notifier)
+      throw new Error("Cron dependencies missing");
     const pending = created ?? (await this.repository.pending());
     if (!pending) return false;
     if (!created) {
@@ -221,7 +261,7 @@ export class MonitorService {
       channels: pending.channels,
       delivered: pending.delivered,
       checkpoint: () =>
-        this.repository.recordReceipt(
+        this.repository!.recordReceipt(
           pending,
           pending.delivered[pending.delivered.length - 1]!,
         ),

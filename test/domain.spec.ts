@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { selectTargetComponent, statusLabel } from "../src/domain/component";
+import { collectIncidentChanges } from "../src/domain/incidents";
 import {
-  collectIncidentChanges,
-  isRelevantIncident,
-} from "../src/domain/incidents";
-import { buildNotificationParts, utf8Length } from "../src/domain/message";
-import { component, incident } from "./helpers";
+  buildNotificationParts,
+  buildCurrentStatusReply,
+  utf8Length,
+} from "../src/domain/message";
+import { component, currentIncident as incident } from "./helpers";
 
 describe("component selection", () => {
   it("selects only the exact Codex API component", () => {
@@ -27,77 +28,91 @@ describe("component selection", () => {
 });
 
 describe("incident matching and revisions", () => {
-  it("supports strict, balanced and broad matching", () => {
-    const api = incident("Codex API requests are failing");
-    const cloud = {
-      ...incident("Codex Cloud tasks are delayed"),
-      name: "Codex Cloud delays",
-    };
-    const general = {
-      ...incident("Elevated errors across ChatGPT and Codex"),
-      name: "Elevated errors",
-    };
-    expect(isRelevantIncident(api, "strict")).toBe(true);
-    expect(isRelevantIncident(cloud, "balanced")).toBe(false);
-    expect(isRelevantIncident(cloud, "broad")).toBe(true);
-    expect(isRelevantIncident(general, "balanced")).toBe(true);
-  });
-
   it("ignores body edits without a timestamp change", () => {
     const first = incident("Initial body");
     const revised = incident("Revised body");
-    const baseline = collectIncidentChanges([first], "balanced", {});
+    const baseline = collectIncidentChanges([first], {});
     expect(
-      collectIncidentChanges([revised], "balanced", baseline.activeIncidents)
-        .events,
+      collectIncidentChanges([revised], baseline.activeIncidents).events,
     ).toEqual([]);
   });
 
-  it("tracks one timestamp per active incident and removes closed history", () => {
+  it("tracks one timestamp per active incident and removes disappeared incidents silently", () => {
     const first = incident("Initial body");
-    const initial = collectIncidentChanges([first], "balanced", {});
+    const initial = collectIncidentChanges([first], {});
     const revised = incident("Revised body", "2026-09-06T03:00:00.000Z");
-    const changes = collectIncidentChanges(
-      [revised],
-      "balanced",
-      initial.activeIncidents,
-    );
+    const changes = collectIncidentChanges([revised], initial.activeIncidents);
     expect(changes.events).toHaveLength(1);
     expect(changes.activeIncidents).toEqual({
       "incident-1": "2026-09-06T03:00:00.000Z",
     });
-    const closed = {
-      ...incident("Recovered", "2026-09-06T04:00:00.000Z"),
-      status: "resolved",
-    };
-    const recovery = collectIncidentChanges(
-      [closed],
-      "balanced",
-      changes.activeIncidents,
-      true,
-    );
-    expect(recovery.events).toHaveLength(1);
+    const recovery = collectIncidentChanges([], changes.activeIncidents);
+    expect(recovery.events).toHaveLength(0);
     expect(recovery.activeIncidents).toEqual({});
-    expect(collectIncidentChanges([closed], "balanced", {}).events).toEqual([]);
-  });
-
-  it("uses incident updated_at and reports only the latest update", () => {
-    const current = { ...incident(), updated_at: "2026-09-06T05:00:00.000Z" };
-    current.incident_updates.push(
-      ...incident("Latest", "2026-09-06T04:00:00.000Z").incident_updates,
-    );
-    const result = collectIncidentChanges([current], "balanced", {});
-    expect(result.events).toHaveLength(1);
-    expect(result.events[0]?.body).toBe("Latest");
-    expect(result.activeIncidents[current.id]).toBe(current.updated_at);
-    expect(
-      collectIncidentChanges([], "balanced", result.activeIncidents)
-        .activeIncidents,
-    ).toEqual({});
   });
 });
 
 describe("message formatting", () => {
+  const current = {
+    ok: true as const,
+    checkedAt: "2026-09-06T03:00:00.000Z",
+    component: {
+      id: "codex-api-id",
+      name: "Codex API",
+      status: "operational",
+      updatedAt: null,
+    },
+    incidents: [],
+    incidentFeedDegraded: false,
+  };
+
+  it("keeps the healthy query to status and time only", () => {
+    const reply = buildCurrentStatusReply(current, "Asia/Shanghai");
+    expect(reply.split("\n")).toHaveLength(2);
+    expect(reply).toContain("Codex API");
+    expect(reply).toContain("正常");
+    expect(reply).toContain("检测时间");
+    expect(reply).not.toMatch(
+      /实时检查完成|查询结果|不更新|不触发|baseline|committed|只读/,
+    );
+  });
+
+  it("shows unavailable incident details without claiming recovery", () => {
+    const reply = buildCurrentStatusReply(
+      {
+        ...current,
+        component: { ...current.component, status: "major_outage" },
+        incidentFeedDegraded: true,
+      },
+      "Asia/Shanghai",
+    );
+    expect(reply).toContain("严重中断");
+    expect(reply).toContain("当前事件详情暂不可用");
+  });
+
+  it("shows translated and original current incident content", () => {
+    const reply = buildCurrentStatusReply(
+      {
+        ...current,
+        component: { ...current.component, status: "major_outage" },
+        incidents: [
+          {
+            ...incident(),
+            translatedName: "错误",
+            translatedMessage: "部分请求失败",
+          },
+        ],
+      },
+      "Asia/Shanghai",
+    );
+    expect(reply).toContain("部分请求失败");
+    expect(reply).toContain("Errors");
+    expect(reply).toContain("官方原文");
+    expect(reply).not.toMatch(
+      /实时检查完成|查询结果|不更新|不触发|baseline|committed|只读/,
+    );
+  });
+
   it("chunks by UTF-8 byte length without splitting an event arbitrarily", () => {
     const event = {
       type: "incident-update" as const,

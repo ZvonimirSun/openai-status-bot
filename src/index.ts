@@ -2,10 +2,10 @@ import { loadConfig, resolveKv } from "./config";
 import { OpenAIStatusClient } from "./clients/openai-status";
 import { TranslationClient } from "./clients/translation-client";
 import { createNotifier, createTelegramClient } from "./clients/notifiers";
-import { buildCheckReply, buildNotificationParts } from "./domain/message";
+import { buildCurrentStatusReply } from "./domain/message";
 import { MonitorStateRepository } from "./repositories/monitor-state";
 import { MonitorService } from "./services/monitor";
-import type { Env, MonitorRunResult, RunTrigger } from "./types";
+import type { Env, MonitorRunResult, CurrentStatusResult } from "./types";
 import { bearerAuthorized, constantTimeEqual } from "./utils/auth";
 
 export default {
@@ -14,7 +14,7 @@ export default {
     env: Env,
     ctx: ExecutionContext,
   ): Promise<void> {
-    ctx.waitUntil(runMonitor(env, "cron"));
+    ctx.waitUntil(runCron(env));
   },
 
   async fetch(
@@ -38,7 +38,7 @@ export default {
     if (url.pathname === "/admin/check" && request.method === "POST") {
       const config = loadConfig(env);
       if (!bearerAuthorized(request, config.adminToken)) return unauthorized();
-      return Response.json(await runMonitor(env, "admin-check"));
+      return Response.json(await checkCurrent(env));
     }
     if (url.pathname === "/admin/state" && request.method === "GET") {
       const config = loadConfig(env);
@@ -51,18 +51,22 @@ export default {
   },
 };
 
-export async function runMonitor(
-  env: Env,
-  trigger: RunTrigger,
-): Promise<MonitorRunResult> {
-  const cron = trigger === "cron";
+export async function runCron(env: Env): Promise<MonitorRunResult> {
+  return (await createService(env, true)).runCron();
+}
+
+export async function checkCurrent(env: Env): Promise<CurrentStatusResult> {
+  return (await createService(env, false)).checkCurrent();
+}
+
+async function createService(env: Env, cron: boolean): Promise<MonitorService> {
   const signal = AbortSignal.timeout(cron ? 60_000 : 20_000);
   const config = loadConfig(env);
-  const service = new MonitorService(
+  return new MonitorService(
     config,
     new OpenAIStatusClient(fetch, signal),
-    new MonitorStateRepository(resolveKv(env)),
-    await createNotifier(env, signal),
+    cron ? new MonitorStateRepository(resolveKv(env)) : null,
+    cron ? await createNotifier(env, signal) : null,
     new TranslationClient(
       {
         baseUrl: config.translationApiBaseUrl,
@@ -74,7 +78,6 @@ export async function runMonitor(
       signal,
     ),
   );
-  return service.run(trigger);
 }
 
 async function handleTelegramWebhook(
@@ -107,24 +110,10 @@ async function processTelegramCheck(env: Env, chatId: string): Promise<void> {
   const config = loadConfig(env);
   let reply: string;
   try {
-    const result = await runMonitor(env, "telegram-check");
-    const summary = buildCheckReply(
-      result.componentStatus,
-      result.changed,
-      result.events.length,
-      new Date().toISOString(),
+    reply = buildCurrentStatusReply(
+      await checkCurrent(env),
       config.displayTimeZone,
     );
-    const details = buildNotificationParts(
-      result.events,
-      result.componentStatus ?? "unknown",
-      new Date().toISOString(),
-      config.displayTimeZone,
-    );
-    // One bounded query reply avoids multi-message fanout and webhook overruns.
-    reply = details[0]
-      ? `Codex API 实时查询（只读）\n${details[0]}${details.length > 1 ? "\n其余事件请查看官方状态页。" : ""}`
-      : summary;
   } catch {
     reply = "Codex API 实时检查失败，请稍后重试。";
   }

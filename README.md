@@ -1,15 +1,15 @@
 # OpenAI Codex API Status Worker
 
-一个运行在 Cloudflare Workers 上的 OpenAI `Codex API` 状态监控器。Cron 先读取组件状态，仅在异常或恢复时查询事件详情，使用 Workers KV 保存组件基线和当前事件的更新时间，通过 Telegram 和/或企业微信群机器人通知变化。Cron 周期由 Cloudflare 面板配置。
+一个运行在 Cloudflare Workers 上的 OpenAI `Codex API` 状态监控器。组件状态是唯一异常依据，Cron 仅在组件异常时查询精确关联的当前事件，使用 Workers KV 保存组件基线和事件更新时间，通过 Telegram 和/或企业微信群机器人通知变化。Cron 周期由 Cloudflare 面板配置。
 
 ## 功能
 
 - 精确匹配 `Codex API` 组件，不合并 Responses、Codex Web、Desktop、CLI 等状态。
 - 通知组件恶化、恢复，以及当前关联事件更新时间变化后的最新进展。
-- 正常时只查询组件；不保存历史事件或正文指纹，事件关闭或消失后移除记录，组件恢复后清空事件记录。
+- 正常和恢复时只查询组件；不保存历史事件或正文指纹，事件从当前列表消失后静默移除记录，组件恢复后清空事件记录。
 - 首次运行只建立基线，正常无变化时不写 KV。
-- OpenAI incidents feed 失败时，仍可处理组件状态变化。
-- 支持 Telegram Bot `/check` 只读实时查询，仅回复查询聊天，不广播通知、不推进 KV。
+- OpenAI Widget 失败时，保留已知事件时间，仍可处理组件状态变化。
+- 支持 Telegram Bot `/check` 实时查询，仅回复当前状态和关联事件，不广播通知，不读写 KV。
 - 提供带 Bearer Token 的只读实时查询和状态诊断接口。
 - 使用单一 `STATUS_KV` binding 和 `CHECK_TOKEN` 管理 Token。
 - 可选调用第三方 OpenAI-compatible API，将 incident 标题和正文翻译为简体中文，同时保留官方英文原文。
@@ -18,12 +18,11 @@
 
 以下普通变量可在 Cloudflare Dashboard 中配置；未配置时使用代码默认值：
 
-| 变量                    | 默认值          | 用途                            |
-| ----------------------- | --------------- | ------------------------------- |
-| `TARGET_COMPONENT_NAME` | `Codex API`     | 精确监控的组件名                |
-| `INCIDENT_MATCH_MODE`   | `balanced`      | `strict`、`balanced` 或 `broad` |
-| `DISPLAY_TIME_ZONE`     | `Asia/Shanghai` | 通知显示时区                    |
-| `NOTIFY_ON_BOOTSTRAP`   | `false`         | 首次运行是否通知                |
+| 变量                    | 默认值          | 用途             |
+| ----------------------- | --------------- | ---------------- |
+| `TARGET_COMPONENT_NAME` | `Codex API`     | 精确监控的组件名 |
+| `DISPLAY_TIME_ZONE`     | `Asia/Shanghai` | 通知显示时区     |
+| `NOTIFY_ON_BOOTSTRAP`   | `false`         | 首次运行是否通知 |
 
 Secrets：
 
@@ -80,7 +79,9 @@ curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
   }'
 ```
 
-在 `TELEGRAM_CHAT_ID` 对应的私聊或群中发送 `/check`。Worker 查询当前组件和活动事件的最新进展，配置完整时翻译内容，并仅回复该聊天。无论是否发现变化，都不写 KV、不广播状态通知；事件仍由下一次 Cron 正常通知。单次查询内容和翻译共享 20 秒预算，回复最多 5 秒；仅发送一条有长度上限的查询回复，更多事件通过官方状态页查看。
+在 `TELEGRAM_CHAT_ID` 对应的私聊或群中发送 `/check`。Worker 查询当前组件，仅异常时获取关联事件，配置完整时翻译内容，并仅回复该聊天。查询不读取基线、不读写 KV、不广播状态通知；事件仍由下一次 Cron 正常通知。单次查询内容和翻译共享 20 秒预算，回复最多 5 秒；仅发送一条有长度上限的查询回复，更多事件通过官方状态页查看。
+
+正常回复仅包含组件状态和检测时间。异常时附加事件译文和官方原文；Widget 失败时显示“当前事件详情暂不可用”，不影响组件状态展示。
 
 若 Bot 位于群组中且启用了 privacy mode，可使用 `/check@你的Bot用户名`。
 
@@ -102,7 +103,7 @@ TRANSLATION_MODEL=...
 # WECOM_WEBHOOK_URL=...
 ```
 
-普通配置项 `TARGET_COMPONENT_NAME`、`INCIDENT_MATCH_MODE`、`DISPLAY_TIME_ZONE`、`NOTIFY_ON_BOOTSTRAP`、`TRANSLATION_API_BASE_URL`、`TRANSLATION_API_STYLE` 也在 Dashboard 中按需覆盖。
+普通配置项 `TARGET_COMPONENT_NAME`、`DISPLAY_TIME_ZONE`、`NOTIFY_ON_BOOTSTRAP`、`TRANSLATION_API_BASE_URL`、`TRANSLATION_API_STYLE` 也在 Dashboard 中按需覆盖。
 
 4. 配置下面的构建环境变量，然后检查并仅部署代码：
 
@@ -117,9 +118,20 @@ npm run deploy
 
 首次 Cron 只建立基线，不发送历史事件。状态统一存储在 KV key `monitor:v1:openai:codex-api`。
 
-`activeIncidents` 仅保存当前事件的 `事件 ID -> updated_at`；上游未提供事件级时间时使用最新更新的时间。正常时为空对象。不再读取历史 revision 指纹；部署后下一次成功检查会用精简状态覆盖原基线，无需手动清空 KV。`INCIDENT_LOOKBACK_DAYS` 已移除，面板中原有同名变量可删除。
+`activeIncidents` 仅保存当前精确关联事件的 `事件 ID -> lastUpdateAt`，正常时为空对象。沿用现有 KV key 和 schemaVersion，无需手动清空 KV；下一次成功查询当前事件列表或组件恢复时会替换旧事件集合。首次默认静默；`NOTIFY_ON_BOOTSTRAP=true` 可启用首次通知。
 
-只追踪组件异常期间的事件。组件恢复时额外查询一次已跟踪事件的官方说明；查询失败仍发送组件恢复通知，不事后补发说明。组件一直正常时不追踪独立事件更新，两次轮询之间发生又恢复的短暂故障可能漏掉。正文修改但更新时间不变不会重复通知。
+只追踪组件异常期间的事件。组件恢复时只发送组件恢复通知，不查询 Widget、不翻译恢复说明。组件一直正常时不追踪独立事件更新，两次轮询之间发生又恢复的短暂故障不补发。正文修改但更新时间不变不会重复通知。
+
+## 状态与事件来源
+
+- 健康状态：`https://status.openai.com/api/v2/components.json`，按组件名精确选择。
+- 异常详情：`https://status.openai.com/proxy/status.openai.com` 的 `summary.ongoing_incidents`。
+- 事件仅通过 `affected_components[].component_id` 或 `component_impacts[].component_id` 与目标组件 ID 精确关联，标题和正文不参与判断。
+- 客户端将 `last_update_at` / `last_update_message` 或网站原生 `updates[]` 中最新 `published_at` 和消息正文统一成当前事件；不调用历史事件接口。
+
+Widget 是官网使用的代理接口，并非稳定性有保证的公开 API；结构校验失败按事件源不可用处理，保留旧事件集合，不推断恢复。
+
+升级时可在 Dashboard 删除已废弃变量 `INCIDENT_MATCH_MODE`。其他变量、KV、Secret、Cron 和构建部署配置不变。发布后检查一次正常 Cron 和 `/check`；正常轮询应无事件请求，无变化时无 KV 写入，查询不读写 KV。已有未完成通知仍按原投递机制先重试，不自动清除。
 
 ## 通知内容
 
@@ -135,7 +147,7 @@ npm run deploy
 示例：
 
 ```text
-OpenAI Codex API 状态通知
+Codex API 状态异常
 当前状态：性能下降
 检测时间：2026-09-06 11:30:00 Asia/Shanghai
 
@@ -151,16 +163,16 @@ We are investigating elevated authentication errors for the Codex API.
 https://status.openai.com/
 ```
 
-Cron 仅对新增当前事件、事件更新时间变化或恢复详情调用翻译；HTTP 和 Telegram 只读查询也会在配置完整、组件异常且有活动事件内容时调用翻译 API。没有待翻译正文时不调用。查询翻译可能产生第三方 API 费用。
+Cron 仅对新增当前事件或事件更新时间变化调用翻译；HTTP 和 Telegram 查询也会在配置完整、组件异常且有活动事件内容时调用翻译 API。正常和恢复时不调用翻译。查询翻译可能产生第三方 API 费用。
 
 ## HTTP 接口
 
-| 方法与路径               | 鉴权                   | 行为                          |
-| ------------------------ | ---------------------- | ----------------------------- |
-| `GET /healthz`           | 无                     | 健康检查，不读取 KV 或 OpenAI |
-| `POST /admin/check`      | Bearer                 | 查询并翻译，不通知、不写 KV   |
-| `GET /admin/state`       | Bearer                 | 返回清理后的当前状态          |
-| `POST /telegram/webhook` | Telegram secret header | 响应 `/check`                 |
+| 方法与路径               | 鉴权                   | 行为                                  |
+| ------------------------ | ---------------------- | ------------------------------------- |
+| `GET /healthz`           | 无                     | 健康检查，不读取 KV 或 OpenAI         |
+| `POST /admin/check`      | Bearer                 | 返回当前状态与译文，不通知、不读写 KV |
+| `GET /admin/state`       | Bearer                 | 返回清理后的当前状态                  |
+| `POST /telegram/webhook` | Telegram secret header | 响应 `/check`                         |
 
 ## Cloudflare Workers Builds
 
@@ -192,10 +204,10 @@ Cron 仅对新增当前事件、事件更新时间变化或恢复详情调用翻
 
 Cron 在发送前持久化待投递内容，并为每个渠道/分片写入独立回执 key。一个渠道失败不妨碍另一个渠道发送该批次的剩余分片。下一次 Cron 先恢复未完成投递，跳过已有成功回执的分片，复用已保存的译文；恢复完成后，本次不再重复抓取，下一次 Cron 才检查新的状态。全部投递成功后推进基线。未完成期间的新状态检查会延后，持续失败的渠道需要修复配置。
 
-回执使用独立 key，避免同一 KV key 每秒多次写入。完成标记保留至下一批通知替换，旧回执随之清理；日常无变化时不写 KV。异常期间 incident feed 失败时保留已知事件时间，恢复访问后只通知当前事件的新进展，不补发历史事件。首次检查默认静默建立基线；若首次事件查询失败，后续获得当前异常详情时正常通知。
+回执使用独立 key，避免同一 KV key 每秒多次写入。完成标记保留至下一批通知替换，旧回执随之清理；日常无变化时不写 KV。异常期间 Widget 失败时保留已知事件时间，恢复访问后只通知当前事件的新进展，不补发历史事件。首次检查默认静默建立基线；若首次事件查询失败，后续获得当前异常详情时正常通知。
 
 投递仍为 at-least-once：若外部平台已收消息但响应丢失，或回执保存失败，下次可能重复；Telegram/企业微信没有可用于该流程的幂等键，不能保证严格 exactly-once。
 
 ## 免费套餐用量
 
-按面板设置每 5 分钟运行，每天 288 次 Cron；持续正常时约 288 次状态源 HTTP 请求，每分钟运行则约 1440 次。异常期间和恢复当次会额外查询事件，失败重试另计。无变化时通常每次读取 KV 2 次（已有完成投递记录时为 3 次），不调用翻译、不通知、不写 KV。KV 写入和回执仅随真实变化增加，失败投递仅在后续 Cron 重试。人工查询另有一次 KV 读取、状态源请求，以及配置完整且有异常详情时的翻译调用。生产配置全部在 Cloudflare Dashboard 维护，部署只更新代码。
+按面板设置每 5 分钟运行，每天 288 次 Cron；持续正常时约 288 次状态源 HTTP 请求，每分钟运行则约 1440 次。仅异常期间额外查询 Widget，恢复当次不查询事件，失败重试另计。保留现有投递机制，无变化时通常每次读取 KV 2 次（已有完成投递记录时为 3 次），不调用翻译、不通知、不写 KV。KV 写入和回执仅随真实变化增加，失败投递仅在后续 Cron 重试。人工查询不读写 KV，仅产生状态源请求，以及配置完整且有异常详情时的翻译调用。生产配置全部在 Cloudflare Dashboard 维护，部署只更新代码。

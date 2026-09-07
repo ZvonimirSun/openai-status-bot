@@ -1,8 +1,7 @@
-import type { Env, IncidentMatchMode } from "./types";
+import type { Env } from "./types";
 
 export interface AppConfig {
   targetComponentName: string;
-  incidentMatchMode: IncidentMatchMode;
   displayTimeZone: string;
   notifyOnBootstrap: boolean;
   adminToken: string | null;
@@ -15,7 +14,6 @@ export interface AppConfig {
 export function loadConfig(env: Env): AppConfig {
   return {
     targetComponentName: env.TARGET_COMPONENT_NAME?.trim() || "Codex API",
-    incidentMatchMode: parseMatchMode(env.INCIDENT_MATCH_MODE),
     displayTimeZone: env.DISPLAY_TIME_ZONE?.trim() || "Asia/Shanghai",
     notifyOnBootstrap: parseBoolean(env.NOTIFY_ON_BOOTSTRAP, false),
     adminToken: env.CHECK_TOKEN?.trim() || null,
@@ -34,12 +32,6 @@ export function resolveKv(env: Env): KVNamespace {
   const kv = env.STATUS_KV;
   if (!kv) throw new Error("STATUS_KV binding is required");
   return kv;
-}
-
-function parseMatchMode(value: string | undefined): IncidentMatchMode {
-  return value === "strict" || value === "broad" || value === "balanced"
-    ? value
-    : "balanced";
 }
 
 function parseBoolean(

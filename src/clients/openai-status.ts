@@ -1,14 +1,12 @@
-import type { IncidentUpdate, StatusComponent, StatusIncident } from "../types";
+import type {
+  CurrentIncident,
+  StatusComponent,
+  WidgetAffectedComponent,
+} from "../types";
 
 const COMPONENTS_URL = "https://status.openai.com/api/v2/components.json";
-const INCIDENTS_URL = "https://status.openai.com/api/v2/incidents.json";
+const WIDGET_URL = "https://status.openai.com/proxy/status.openai.com";
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
-
-export interface StatusSnapshot {
-  components: StatusComponent[];
-  incidents: StatusIncident[] | null;
-  incidentFeedDegraded: boolean;
-}
 
 export class OpenAIStatusClient {
   constructor(
@@ -16,35 +14,7 @@ export class OpenAIStatusClient {
     private readonly signal?: AbortSignal,
   ) {}
 
-  async fetchSnapshot(
-    needsIncidents: (components: StatusComponent[]) => boolean = (components) =>
-      components.some(
-        (item) => item.name === "Codex API" && item.status !== "operational",
-      ),
-  ): Promise<StatusSnapshot> {
-    const components = await this.fetchComponents();
-    if (!needsIncidents(components)) {
-      return { components, incidents: null, incidentFeedDegraded: false };
-    }
-    try {
-      return {
-        components,
-        incidents: await this.fetchIncidents(),
-        incidentFeedDegraded: false,
-      };
-    } catch {
-      console.warn(
-        JSON.stringify({ source: "openai-incidents", result: "degraded" }),
-      );
-      return {
-        components,
-        incidents: null,
-        incidentFeedDegraded: true,
-      };
-    }
-  }
-
-  private async fetchComponents(): Promise<StatusComponent[]> {
+  async fetchComponents(): Promise<StatusComponent[]> {
     const payload = await this.fetchJson(COMPONENTS_URL);
     if (!isRecord(payload) || !Array.isArray(payload.components)) {
       throw new Error("Invalid OpenAI components response");
@@ -56,14 +26,35 @@ export class OpenAIStatusClient {
     return components;
   }
 
-  private async fetchIncidents(): Promise<StatusIncident[]> {
-    const payload = await this.fetchJson(INCIDENTS_URL);
-    if (!isRecord(payload) || !Array.isArray(payload.incidents)) {
-      throw new Error("Invalid OpenAI incidents response");
+  async fetchRelevantIncidents(
+    componentId: string,
+  ): Promise<CurrentIncident[]> {
+    const payload = await this.fetchJson(WIDGET_URL);
+    if (
+      !isRecord(payload) ||
+      !isRecord(payload.summary) ||
+      !Array.isArray(payload.summary.ongoing_incidents)
+    ) {
+      throw new Error("Invalid OpenAI Widget summary");
     }
-    const incidents = payload.incidents.filter(isStatusIncident);
-    if (incidents.length !== payload.incidents.length) {
-      throw new Error("Invalid incident entry in OpenAI response");
+    const incidents: CurrentIncident[] = [];
+    const ids = new Set<string>();
+    for (const incident of payload.summary.ongoing_incidents) {
+      if (!isRecord(incident))
+        throw new Error("Invalid OpenAI Widget incident");
+      const affected = readAffectedComponents(incident.affected_components);
+      const impacts = readAffectedComponents(incident.component_impacts);
+      if (
+        ![...affected, ...impacts].some(
+          (entry) => entry.component_id === componentId,
+        )
+      )
+        continue;
+      const current = toCurrentIncident(incident);
+      if (ids.has(current.id))
+        throw new Error("Invalid duplicate OpenAI Widget incident");
+      ids.add(current.id);
+      incidents.push(current);
     }
     return incidents;
   }
@@ -126,43 +117,80 @@ function isStatusComponent(value: unknown): value is StatusComponent {
   );
 }
 
-function isStatusIncident(value: unknown): value is StatusIncident {
+function readAffectedComponents(value: unknown): WidgetAffectedComponent[] {
+  if (value === undefined) return [];
   if (
-    !isRecord(value) ||
-    typeof value.id !== "string" ||
-    typeof value.name !== "string" ||
-    typeof value.status !== "string" ||
-    (value.updated_at !== undefined &&
-      (typeof value.updated_at !== "string" ||
-        !Number.isFinite(Date.parse(value.updated_at))))
+    !Array.isArray(value) ||
+    !value.every(
+      (entry) =>
+        isRecord(entry) &&
+        typeof entry.component_id === "string" &&
+        entry.component_id.length > 0,
+    )
   ) {
-    return false;
+    throw new Error("Invalid OpenAI Widget component associations");
   }
-  if (
-    !Array.isArray(value.incident_updates) ||
-    !value.incident_updates.every(isIncidentUpdate)
-  ) {
-    return false;
-  }
-  return (
-    typeof value.shortlink === "string" ||
-    value.shortlink === null ||
-    value.shortlink === undefined
-  );
+  return value as WidgetAffectedComponent[];
 }
 
-function isIncidentUpdate(value: unknown): value is IncidentUpdate {
-  return (
-    isRecord(value) &&
-    typeof value.id === "string" &&
-    typeof value.status === "string" &&
-    typeof value.body === "string" &&
-    typeof value.updated_at === "string" &&
-    Number.isFinite(Date.parse(value.updated_at)) &&
-    (typeof value.created_at === "string" ||
-      value.created_at === null ||
-      value.created_at === undefined)
-  );
+function toCurrentIncident(value: Record<string, unknown>): CurrentIncident {
+  if (
+    typeof value.id !== "string" ||
+    !value.id ||
+    typeof value.name !== "string" ||
+    typeof value.status !== "string"
+  ) {
+    throw new Error("Invalid OpenAI Widget incident identity");
+  }
+  let lastUpdateAt = value.last_update_at;
+  let message = value.last_update_message;
+  // The site's native schema carries updates instead of the compact fields.
+  // Normalize both at the boundary; the monitor only sees the latest content.
+  if (lastUpdateAt === undefined && message === undefined) {
+    if (!Array.isArray(value.updates) || value.updates.length === 0)
+      throw new Error("Invalid OpenAI Widget updates");
+    const updates = value.updates
+      .map((update: unknown) => {
+        if (!isRecord(update) || !isTimestamp(update.published_at))
+          throw new Error("Invalid OpenAI Widget update time");
+        const body =
+          update.message_string ??
+          (isRecord(update.message) ? update.message.markdown : undefined);
+        if (typeof body !== "string")
+          throw new Error("Invalid OpenAI Widget update message");
+        return { at: update.published_at, body };
+      })
+      .sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+    lastUpdateAt = updates[0]!.at;
+    message = updates[0]!.body;
+  }
+  if (!isTimestamp(lastUpdateAt) || typeof message !== "string")
+    throw new Error("Invalid OpenAI Widget latest update");
+  const url =
+    value.url ??
+    `https://status.openai.com/incidents/${encodeURIComponent(value.id)}`;
+  if (typeof url !== "string" || !isHttpsUrl(url))
+    throw new Error("Invalid OpenAI Widget incident URL");
+  return {
+    id: value.id,
+    name: value.name,
+    status: value.status,
+    lastUpdateAt,
+    message,
+    url,
+  };
+}
+
+function isTimestamp(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function isHttpsUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

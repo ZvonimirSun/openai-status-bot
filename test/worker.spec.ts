@@ -52,11 +52,13 @@ describe("worker handlers", () => {
         expect(init?.signal).toBeInstanceOf(AbortSignal);
         if (url.includes("components"))
           return jsonResponse({ components: [component("major_outage")] });
-        if (url.includes("incidents"))
+        if (url.includes("/proxy/"))
           return jsonResponse({
-            incidents: [
-              incident("Codex API unavailable", new Date().toISOString()),
-            ],
+            summary: {
+              ongoing_incidents: [
+                incident("Codex API unavailable", new Date().toISOString()),
+              ],
+            },
           });
         if (url === "https://translation.example/v1/chat/completions")
           return jsonResponse({
@@ -95,12 +97,13 @@ describe("worker handlers", () => {
       },
     );
     expect(await result.json()).toMatchObject({
-      trigger: "admin-check",
-      committed: false,
-      notified: false,
-      events: [expect.objectContaining({ translatedBody: "translated body" })],
+      component: { status: "major_outage" },
+      incidents: [
+        expect.objectContaining({ translatedMessage: "translated body" }),
+      ],
     });
     expect(kv.puts).toBe(0);
+    expect(kv.gets).toBe(0);
     expect(fetcher).toHaveBeenCalledTimes(3);
   });
 
@@ -128,18 +131,43 @@ describe("worker handlers", () => {
     expect(allowed.status).toBe(200);
   });
 
+  it("queries without any KV binding and returns only the current snapshot", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ components: [component()] })),
+    );
+    const response = await worker.fetch(
+      new Request("https://example.com/admin/check", {
+        method: "POST",
+        headers: { Authorization: "Bearer secret" },
+      }),
+      { CHECK_TOKEN: "secret" },
+    );
+    const result = await response.json();
+    expect(Object.keys(result as object).sort()).toEqual([
+      "checkedAt",
+      "component",
+      "incidentFeedDegraded",
+      "incidents",
+      "ok",
+    ]);
+  });
+
   it("handles Telegram /check as read-only and only replies to the configured chat", async () => {
     const kv = new MemoryKv();
     const calls: string[] = [];
+    const replies: string[] = [];
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         calls.push(url);
         if (url.includes("components"))
           return jsonResponse({ components: [component()] });
-        if (url.includes("incidents")) return jsonResponse({ incidents: [] });
-        if (url.includes("api.telegram.org")) return jsonResponse({ ok: true });
+        if (url.includes("api.telegram.org")) {
+          replies.push(JSON.parse(String(init?.body)).text);
+          return jsonResponse({ ok: true });
+        }
         return jsonResponse({}, 404);
       }),
     );
@@ -175,6 +203,9 @@ describe("worker handlers", () => {
     expect(response.status).toBe(200);
     await Promise.all(pending);
     expect(kv.puts).toBe(0);
+    expect(kv.gets).toBe(0);
+    expect(replies[0]!.split("\n")).toHaveLength(2);
+    expect(replies[0]).toContain("正常");
     expect(
       calls.filter((url) => url.includes("api.telegram.org")),
     ).toHaveLength(1);

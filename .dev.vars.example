@@ -4,6 +4,11 @@
 # Optional /check additionally requires a webhook secret.
 # TELEGRAM_WEBHOOK_SECRET=replace-with-telegram-webhook-secret
 CHECK_TOKEN=replace-with-a-long-random-token
+# Component state is authoritative; event association uses exact component IDs.
+# TARGET_COMPONENT_NAME=Codex API
+# DISPLAY_TIME_ZONE=Asia/Shanghai
+# First cron observation is silent unless explicitly enabled.
+# NOTIFY_ON_BOOTSTRAP=false
 # Optional third-party translation API. Base URL defaults to DeepSeek.
 # TRANSLATION_API_KEY=replace-with-provider-api-key
 # TRANSLATION_MODEL=replace-with-model-id
