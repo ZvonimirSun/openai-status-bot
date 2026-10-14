@@ -13,7 +13,8 @@ export interface AppConfig {
 
 export function loadConfig(env: Env): AppConfig {
   return {
-    targetComponentName: env.TARGET_COMPONENT_NAME?.trim() || "Codex API",
+    targetComponentName:
+      env.TARGET_COMPONENT_NAME?.trim() || "Codex in ChatGPT Desktop,Codex API",
     displayTimeZone: env.DISPLAY_TIME_ZONE?.trim() || "Asia/Shanghai",
     notifyOnBootstrap: parseBoolean(env.NOTIFY_ON_BOOTSTRAP, false),
     adminToken: env.CHECK_TOKEN?.trim() || null,

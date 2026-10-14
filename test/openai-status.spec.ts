@@ -79,6 +79,68 @@ describe("Widget component associations", () => {
     expect(await client([]).fetchRelevantIncidents("codex-api-id")).toEqual([]);
   });
 
+  it("uses Codex keywords as a fallback in titles and latest messages", async () => {
+    const results = await client([
+      {
+        ...incident(),
+        id: "title",
+        name: "Elevated CODEX errors",
+        affected_components: [],
+      },
+      {
+        ...incident(),
+        id: "body",
+        name: "Elevated errors",
+        last_update_message: "Codex users may see errors",
+        affected_components: [],
+      },
+      {
+        ...incident(),
+        id: "other",
+        name: "ChatGPT errors",
+        last_update_message: "ChatGPT unavailable",
+        affected_components: [],
+      },
+      { ...incident(), id: "resolved", status: "resolved" },
+    ]).fetchRelevantIncidents(["desktop-id", "codex-api-id"], ["web-id"], true);
+    expect(results.map((entry) => entry.id)).toEqual(["title", "body"]);
+  });
+
+  it("excludes Web-only incidents but retains incidents also affecting Desktop or API", async () => {
+    const results = await client([
+      {
+        ...incident(),
+        id: "web",
+        name: "Codex errors",
+        affected_components: [{ component_id: "web-id" }],
+      },
+      {
+        ...incident(),
+        id: "multi",
+        name: "Codex Web errors",
+        affected_components: [
+          { component_id: "web-id" },
+          { component_id: "desktop-id" },
+        ],
+      },
+      {
+        ...incident(),
+        id: "cloud",
+        name: "Codex cloud tasks failing",
+        last_update_message: "Cloud tasks are unavailable",
+        affected_components: [],
+      },
+      { ...incident(), id: "api", name: "Service errors" },
+      {
+        ...incident(),
+        id: "impact-web",
+        affected_components: [],
+        component_impacts: [{ component_id: "web-id" }],
+      },
+    ]).fetchRelevantIncidents(["desktop-id", "codex-api-id"], ["web-id"], true);
+    expect(results.map((entry) => entry.id)).toEqual(["multi", "api"]);
+  });
+
   it.each([
     null,
     [null],

@@ -27,8 +27,14 @@ export class OpenAIStatusClient {
   }
 
   async fetchRelevantIncidents(
-    componentId: string,
+    componentId: string | string[],
+    excludedComponentIds: string[] = [],
+    matchCodexKeywords = false,
   ): Promise<CurrentIncident[]> {
+    const targetIds = new Set(
+      typeof componentId === "string" ? [componentId] : componentId,
+    );
+    const excludedIds = new Set(excludedComponentIds);
     const payload = await this.fetchJson(WIDGET_URL);
     if (
       !isRecord(payload) ||
@@ -44,17 +50,27 @@ export class OpenAIStatusClient {
         throw new Error("Invalid OpenAI Widget incident");
       const affected = readAffectedComponents(incident.affected_components);
       const impacts = readAffectedComponents(incident.component_impacts);
-      if (
-        ![...affected, ...impacts].some(
-          (entry) => entry.component_id === componentId,
-        )
-      )
-        continue;
+      const associations = [...affected, ...impacts];
+      const exactMatch = associations.some((entry) =>
+        targetIds.has(entry.component_id),
+      );
+      // An explicit target association wins even when Web is also affected.
+      // Keywords must never pull in an incident explicitly limited to Web.
+      const excludedOnly =
+        associations.length > 0 &&
+        associations.every((entry) => excludedIds.has(entry.component_id));
+      if (!exactMatch && (!matchCodexKeywords || excludedOnly)) continue;
       const current = toCurrentIncident(incident);
+      if (current.status === "resolved" || current.status === "postmortem")
+        continue;
+      if (!exactMatch && !matchesCodexKeywords(current)) continue;
       if (ids.has(current.id))
         throw new Error("Invalid duplicate OpenAI Widget incident");
       ids.add(current.id);
-      incidents.push(current);
+      incidents.push({
+        ...current,
+        matchedBy: exactMatch ? "component" : "keyword",
+      });
     }
     return incidents;
   }
@@ -103,6 +119,15 @@ export class OpenAIStatusClient {
       ? lastError
       : new Error("OpenAI status request failed");
   }
+}
+
+function matchesCodexKeywords(incident: CurrentIncident): boolean {
+  const text = `${incident.name}\n${incident.message}`;
+  if (!/\bcodex\b/i.test(text)) return false;
+  // Unassociated incidents specifically about cloud/Web tasks are outside scope.
+  const webOrCloud = /\bcodex\s+(?:web|cloud)\b|\b(?:web|cloud)[ -]+tasks?\b/i;
+  const desktopOrApi = /\bdesktop\b|\bcodex\s+api\b/i;
+  return !webOrCloud.test(text) || desktopOrApi.test(text);
 }
 
 function isStatusComponent(value: unknown): value is StatusComponent {

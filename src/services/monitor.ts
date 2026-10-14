@@ -9,7 +9,10 @@ import type {
   MonitorStateV1,
   CurrentStatusResult,
 } from "../types";
-import { selectTargetComponent } from "../domain/component";
+import {
+  selectMonitoredComponents,
+  summarizeComponents,
+} from "../domain/component";
 import { collectIncidentChanges, toIncidentEvent } from "../domain/incidents";
 import { buildNotificationParts } from "../domain/message";
 import type {
@@ -28,23 +31,35 @@ export class MonitorService {
   ) {}
 
   private async fetchCurrent() {
-    const component = selectTargetComponent(
-      await this.client.fetchComponents(),
+    const allComponents = await this.client.fetchComponents();
+    const components = selectMonitoredComponents(
+      allComponents,
       this.config.targetComponentName,
     );
-    if (component.status === "operational")
-      return { component, incidents: [], incidentFeedDegraded: false };
+    const component = summarizeComponents(components);
     try {
       return {
         component,
-        incidents: await this.client.fetchRelevantIncidents(component.id),
+        components,
+        incidents: await this.client.fetchRelevantIncidents(
+          components.map((entry) => entry.id),
+          allComponents
+            .filter((entry) => entry.name === "Codex Web")
+            .map((entry) => entry.id),
+          components.some((entry) => /\bcodex\b/i.test(entry.name)),
+        ),
         incidentFeedDegraded: false,
       };
     } catch {
       console.warn(
         JSON.stringify({ source: "openai-widget", result: "degraded" }),
       );
-      return { component, incidents: null, incidentFeedDegraded: true };
+      return {
+        component,
+        components,
+        incidents: null,
+        incidentFeedDegraded: true,
+      };
     }
   }
 
@@ -64,6 +79,7 @@ export class MonitorService {
         status: snapshot.component.status,
         updatedAt: snapshot.component.updated_at,
       },
+      monitoredComponents: snapshot.components,
       incidents: incidents.map((incident, index) => {
         const event = translated[index];
         return {
@@ -112,8 +128,7 @@ export class MonitorService {
       const component = snapshot.component;
       const bootstrap = loaded === null;
       const previousIncidents = loaded?.activeIncidents ?? {};
-      const recovering = component.status === "operational";
-      let activeIncidents = recovering ? {} : previousIncidents;
+      let activeIncidents = previousIncidents;
       let incidentEvents: MonitorEvent[] = [];
       let candidateCount = 0;
       if (snapshot.incidents) {
@@ -126,25 +141,32 @@ export class MonitorService {
         incidentEvents = changes.events;
       }
 
-      const componentChanged =
-        previousStatus !== null && previousStatus !== component.status;
-      const componentEvent: ComponentStatusChangedEvent | null =
-        componentChanged
-          ? {
-              type: "component-status-changed",
-              previousStatus,
-              currentStatus: component.status,
-              componentId: component.id,
-              componentName: component.name,
-              componentUpdatedAt: component.updated_at,
-              observedAt,
-            }
-          : null;
-      let events = componentEvent
-        ? [componentEvent, ...incidentEvents]
-        : incidentEvents;
+      const componentEvents: ComponentStatusChangedEvent[] = [];
+      for (const current of snapshot.components) {
+        const previous =
+          loaded?.componentStatuses?.[current.id] ??
+          (loaded?.component.id === current.id
+            ? loaded.component.status
+            : null);
+        if (
+          !bootstrap &&
+          previous !== current.status &&
+          (previous !== null || current.status !== "operational")
+        ) {
+          componentEvents.push({
+            type: "component-status-changed",
+            previousStatus: previous,
+            currentStatus: current.status,
+            componentId: current.id,
+            componentName: current.name,
+            componentUpdatedAt: current.updated_at,
+            observedAt,
+          });
+        }
+      }
+      let events: MonitorEvent[] = [...componentEvents, ...incidentEvents];
       if (bootstrap) {
-        events = componentEvent ? [componentEvent] : [];
+        events = [];
       }
       if (bootstrap && this.config.notifyOnBootstrap) {
         events = [
@@ -174,6 +196,9 @@ export class MonitorService {
           updatedAt: component.updated_at,
         },
         activeIncidents,
+        componentStatuses: Object.fromEntries(
+          snapshot.components.map((current) => [current.id, current.status]),
+        ),
       };
       const changed = events.length > 0;
       const translatedEvents =
@@ -186,6 +211,7 @@ export class MonitorService {
         component.status,
         observedAt,
         this.config.displayTimeZone,
+        Object.keys(activeIncidents).length,
       );
       let notified = false;
       let committed = false;
@@ -206,6 +232,8 @@ export class MonitorService {
         !committed &&
         (changed ||
           bootstrap ||
+          JSON.stringify(nextState.componentStatuses) !==
+            JSON.stringify(loaded?.componentStatuses) ||
           JSON.stringify(activeIncidents) !==
             JSON.stringify(loaded?.activeIncidents))
       ) {

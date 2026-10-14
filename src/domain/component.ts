@@ -41,3 +41,36 @@ export function statusLabel(status: string): string {
   };
   return labels[status] ?? `未知状态 (${status})`;
 }
+
+export function selectMonitoredComponents(
+  components: StatusComponent[],
+  targetNames: string,
+): StatusComponent[] {
+  const names = [...new Set(targetNames.split(",").map((name) => name.trim()))];
+  return names.map((name) => selectTargetComponent(components, name));
+}
+
+export function summarizeComponents(
+  components: StatusComponent[],
+): StatusComponent {
+  if (components.length === 1) return components[0]!;
+  const severity = [
+    "operational",
+    "under_maintenance",
+    "degraded_performance",
+    "partial_outage",
+    "major_outage",
+  ];
+  const worst = components.reduce((a, b) =>
+    severity.indexOf(a.status) >= severity.indexOf(b.status) ? a : b,
+  );
+  return {
+    id: components
+      .map((component) => component.id)
+      .sort()
+      .join(","),
+    name: components.map((component) => component.name).join(" / "),
+    status: worst.status,
+    updated_at: worst.updated_at,
+  };
+}

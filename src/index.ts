@@ -115,7 +115,7 @@ async function processTelegramCheck(env: Env, chatId: string): Promise<void> {
       config.displayTimeZone,
     );
   } catch {
-    reply = "Codex API 实时检查失败，请稍后重试。";
+    reply = "Codex 实时检查失败，请稍后重试。";
   }
   const telegram = createTelegramClient(env, AbortSignal.timeout(5_000));
   if (telegram) await telegram.sendToChat(chatId, reply);

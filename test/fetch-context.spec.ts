@@ -4,7 +4,7 @@ import { TranslationClient } from "../src/clients/translation-client";
 import { TelegramNotifier, WeComNotifier } from "../src/clients/notifiers";
 import worker, { runCron } from "../src/index";
 import type { IncidentUpdateEvent } from "../src/types";
-import { component, jsonResponse, MemoryKv } from "./helpers";
+import { components, jsonResponse, MemoryKv } from "./helpers";
 
 describe("Workers fetch receiver", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -14,7 +14,7 @@ describe("Workers fetch receiver", () => {
       if (this !== globalThis) throw new TypeError("Illegal invocation");
       const url = String(input);
       if (url.includes("components.json"))
-        return jsonResponse({ components: [component()] });
+        return jsonResponse({ components: components() });
       if (url.includes("/proxy/"))
         return jsonResponse({ summary: { ongoing_incidents: [] } });
       if (url.includes("chat/completions"))
@@ -36,7 +36,7 @@ describe("Workers fetch receiver", () => {
   it("preserves the global receiver for every external client", async () => {
     const fetcher = receiverCheckedFetch();
     vi.stubGlobal("fetch", fetcher);
-    expect(await new OpenAIStatusClient().fetchComponents()).toHaveLength(1);
+    expect(await new OpenAIStatusClient().fetchComponents()).toHaveLength(3);
     expect(
       await new OpenAIStatusClient().fetchRelevantIncidents("codex-api-id"),
     ).toEqual([]);

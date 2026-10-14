@@ -41,12 +41,14 @@ export interface CurrentIncident {
   url: string | null;
   translatedName?: string;
   translatedMessage?: string;
+  matchedBy?: "component" | "keyword";
 }
 
 export interface CurrentStatusResult {
   ok: true;
   checkedAt: string;
   component: MonitorStateV1["component"];
+  monitoredComponents?: StatusComponent[];
   incidents: CurrentIncident[];
   incidentFeedDegraded: boolean;
 }
@@ -62,6 +64,7 @@ export interface MonitorStateV1 {
     updatedAt: string | null;
   };
   activeIncidents: Record<string, string>;
+  componentStatuses?: Record<string, string>;
 }
 
 export interface ComponentStatusChangedEvent {
@@ -87,6 +90,7 @@ export interface IncidentUpdateEvent {
   revised: boolean;
   translatedIncidentName?: string;
   translatedBody?: string;
+  matchedBy?: "component" | "keyword";
 }
 
 export type MonitorEvent = ComponentStatusChangedEvent | IncidentUpdateEvent;

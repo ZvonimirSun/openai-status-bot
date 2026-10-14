@@ -14,6 +14,7 @@ export function toIncidentEvent(
     eventAt: incident.lastUpdateAt,
     shortlink: incident.url,
     revised: false,
+    ...(incident.matchedBy ? { matchedBy: incident.matchedBy } : {}),
     ...(incident.translatedName
       ? { translatedIncidentName: incident.translatedName }
       : {}),

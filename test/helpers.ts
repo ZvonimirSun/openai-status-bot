@@ -59,6 +59,14 @@ export function incident(
   };
 }
 
+export function components(status = "operational"): StatusComponent[] {
+  return [
+    component(status),
+    { ...component(), id: "desktop-id", name: "Codex in ChatGPT Desktop" },
+    { ...component(), id: "web-id", name: "Codex Web" },
+  ];
+}
+
 export function currentIncident(
   message = "Errors",
   lastUpdateAt = "2026-09-06T02:05:00.000Z",

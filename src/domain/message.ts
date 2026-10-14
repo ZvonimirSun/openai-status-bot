@@ -10,6 +10,9 @@ export function buildNotificationParts(
   currentStatus: string,
   observedAt: string,
   timeZone: string,
+  activeIncidentCount = events.filter(
+    (event) => event.type === "incident-update",
+  ).length,
 ): string[] {
   const recovering = events.some(
     (event) =>
@@ -18,21 +21,17 @@ export function buildNotificationParts(
       event.currentStatus === "operational",
   );
   const header = [
-    currentStatus === "operational"
-      ? recovering
-        ? "Codex API 已恢复"
-        : "Codex API 当前状态"
-      : "Codex API 状态异常",
-    `当前状态：${statusLabel(currentStatus)}`,
+    activeIncidentCount > 0
+      ? "Codex 有活动故障事件"
+      : currentStatus === "operational"
+        ? recovering
+          ? "Codex 组件已恢复"
+          : "Codex 当前状态"
+        : "Codex 状态异常",
+    `组件状态：${statusLabel(currentStatus)}`,
     `检测时间：${formatDateTime(observedAt, timeZone)} ${timeZone}`,
   ].join("\n");
-  const blocks = events
-    .filter(
-      (event) =>
-        currentStatus !== "operational" ||
-        event.type === "component-status-changed",
-    )
-    .map((event) => formatEvent(event, timeZone));
+  const blocks = events.map((event) => formatEvent(event, timeZone));
   return chunkBlocks(header, blocks, MAX_BYTES);
 }
 
@@ -41,11 +40,19 @@ export function buildCurrentStatusReply(
   timeZone: string,
 ): string {
   const header = [
-    `${result.component.name} 当前状态：${statusLabel(result.component.status)}`,
+    ...(result.monitoredComponents ?? [result.component]).map(
+      (component) =>
+        `${component.name} 当前状态：${statusLabel(component.status)}`,
+    ),
+    ...(result.incidents.length > 0 ? ["有活动故障事件，请查看下方详情"] : []),
     `检测时间：${formatDateTime(result.checkedAt, timeZone)} ${timeZone}`,
   ].join("\n");
-  if (result.component.status === "operational") return header;
   if (result.incidentFeedDegraded) return `${header}\n当前事件详情暂不可用`;
+  if (
+    result.component.status === "operational" &&
+    result.incidents.length === 0
+  )
+    return header;
   const parts = chunkBlocks(
     header,
     result.incidents.map((incident) =>
@@ -66,7 +73,7 @@ export function utf8Length(value: string): number {
 function formatEvent(event: MonitorEvent, timeZone: string): string {
   if (event.type === "component-status-changed") {
     return [
-      "组件状态变化",
+      `${event.componentName} 组件状态变化`,
       `${event.previousStatus ? statusLabel(event.previousStatus) : "首次观察"} → ${statusLabel(event.currentStatus)}`,
     ].join("\n");
   }
@@ -77,6 +84,11 @@ function formatEvent(event: MonitorEvent, timeZone: string): string {
       ? [`官方标题：${event.incidentName}`]
       : []),
     `阶段：${statusLabel(event.updateStatus)}`,
+    ...(event.matchedBy === "keyword"
+      ? ["匹配依据：Codex 关键词（是否影响桌面端待确认）"]
+      : event.matchedBy === "component"
+        ? ["匹配依据：目标组件关联"]
+        : []),
     `官方时间：${formatDateTime(event.eventAt, timeZone)} ${timeZone}`,
     event.translatedBody
       ? `中文翻译：\n${truncateToBytes(event.translatedBody, 1400)}\n\n官方原文：\n${truncateToBytes(event.body, 1200)}`

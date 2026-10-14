@@ -9,7 +9,7 @@ import {
 } from "../src/repositories/monitor-state";
 import { MonitorService } from "../src/services/monitor";
 import type { Env } from "../src/types";
-import { component, incident, jsonResponse, MemoryKv } from "./helpers";
+import { components, incident, jsonResponse, MemoryKv } from "./helpers";
 
 describe("MonitorService", () => {
   let kv: MemoryKv;
@@ -23,6 +23,72 @@ describe("MonitorService", () => {
       send: vi.fn(async (parts: string[]) => void sent.push(parts)),
     };
   });
+
+  it.each(["desktop", "api", "keyword", "desktop-while-api-down"])(
+    "reports and notifies %s faults without relying on a single component",
+    async (source) => {
+      await createService(
+        kv,
+        notifier,
+        source === "desktop-while-api-down" ? "major_outage" : "operational",
+        [],
+      ).runCron();
+      const observedComponents = components();
+      if (source === "desktop")
+        observedComponents[1]!.status = "degraded_performance";
+      if (source === "desktop-while-api-down") {
+        observedComponents[0]!.status = "major_outage";
+        observedComponents[1]!.status = "degraded_performance";
+      }
+      if (source === "api") observedComponents[0]!.status = "major_outage";
+      const active = {
+        ...incident("Codex users are experiencing errors"),
+        name: "Elevated Codex errors",
+        affected_components:
+          source === "keyword"
+            ? []
+            : [
+                {
+                  component_id: source.startsWith("desktop")
+                    ? "desktop-id"
+                    : "codex-api-id",
+                },
+              ],
+      };
+      const service = new MonitorService(
+        loadConfig({}),
+        new OpenAIStatusClient(async (input) =>
+          String(input).includes("components.json")
+            ? jsonResponse({ components: observedComponents })
+            : jsonResponse({ summary: { ongoing_incidents: [active] } }),
+        ),
+        new MonitorStateRepository(kv.asNamespace()),
+        notifier,
+        new TranslationClient({
+          baseUrl: "https://example.com",
+          apiKey: null,
+          model: null,
+          style: "chat-completions",
+        }),
+      );
+      const checked = await service.checkCurrent();
+      expect(checked.incidents).toHaveLength(1);
+      expect(checked.monitoredComponents).toHaveLength(2);
+      const run = await service.runCron();
+      expect(run.notified).toBe(true);
+      if (source.startsWith("desktop"))
+        expect(run.events).toContainEqual(
+          expect.objectContaining({
+            type: "component-status-changed",
+            componentName: "Codex in ChatGPT Desktop",
+          }),
+        );
+      expect(sent.flat().join("\n")).toContain("Elevated Codex errors");
+      expect(sent.flat().join("\n")).toContain("有活动故障事件");
+      await service.runCron();
+      expect(sent).toHaveLength(1);
+    },
+  );
 
   it("advances the baseline without notifications or translation when channels are disabled", async () => {
     const disabled = new CompositeNotifier([]);
@@ -48,7 +114,7 @@ describe("MonitorService", () => {
   });
 
   it("bootstraps without notification, then performs no write when unchanged", async () => {
-    const service = createService(kv, notifier, "operational", [incident()]);
+    const service = createService(kv, notifier, "operational", []);
     const baseline = await service.runCron();
     expect(baseline.reason).toBe("baseline");
     expect(sent).toHaveLength(0);
@@ -59,9 +125,11 @@ describe("MonitorService", () => {
     expect(kv.puts).toBe(1);
   });
 
-  it("fetches only components while healthy, including read-only checks", async () => {
-    const fetcher = vi.fn(async (_input: RequestInfo | URL) =>
-      jsonResponse({ components: [component()] }),
+  it("checks incidents even while components are healthy, without idle KV writes", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes("components.json")
+        ? jsonResponse({ components: components() })
+        : jsonResponse({ summary: { ongoing_incidents: [] } }),
     );
     const translator = new TranslationClient({
       baseUrl: "https://example.com",
@@ -80,12 +148,12 @@ describe("MonitorService", () => {
     await service.runCron();
     await service.checkCurrent();
     await service.checkCurrent();
-    expect(fetcher).toHaveBeenCalledTimes(4);
+    expect(fetcher).toHaveBeenCalledTimes(8);
     expect(
-      fetcher.mock.calls.every(([url]) =>
+      fetcher.mock.calls.filter(([url]) =>
         String(url).includes("components.json"),
       ),
-    ).toBe(true);
+    ).toHaveLength(4);
     expect(kv.puts).toBe(1);
     expect(JSON.parse(kv.values.get(STATE_KEY)!)).toMatchObject({
       activeIncidents: {},
@@ -126,7 +194,7 @@ describe("MonitorService", () => {
     expect(sent).toHaveLength(1);
   });
 
-  it("clears recovery state even when incident details are unavailable", async () => {
+  it("preserves incident timestamps during recovery when details are unavailable", async () => {
     await createService(kv, notifier, "major_outage", [incident()]).runCron();
     const result = await createService(
       kv,
@@ -136,7 +204,10 @@ describe("MonitorService", () => {
     ).runCron();
     expect(result.notified).toBe(true);
     expect(result.events).toHaveLength(1);
-    expect(JSON.parse(kv.values.get(STATE_KEY)!).activeIncidents).toEqual({});
+    expect(result.incidentFeedDegraded).toBe(true);
+    expect(
+      JSON.parse(kv.values.get(STATE_KEY)!).activeIncidents,
+    ).toHaveProperty("incident-1");
   });
 
   it("removes disappeared events without sending a false recovery notification", async () => {
@@ -208,11 +279,12 @@ describe("MonitorService", () => {
     );
   });
 
-  it("fetches neither Widget nor translation on recovery, and only notifies once", async () => {
+  it("checks Widget on recovery, skips translation without incidents, and only notifies once", async () => {
     await createService(kv, notifier, "major_outage", [incident()]).runCron();
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
-      expect(String(input)).toContain("components.json");
-      return jsonResponse({ components: [component()] });
+      return String(input).includes("components.json")
+        ? jsonResponse({ components: components() })
+        : jsonResponse({ summary: { ongoing_incidents: [] } });
     });
     const translator = new TranslationClient({
       baseUrl: "https://example.com",
@@ -230,7 +302,7 @@ describe("MonitorService", () => {
     );
     const result = await service.runCron();
     await service.runCron();
-    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher).toHaveBeenCalledTimes(4);
     expect(translate).not.toHaveBeenCalled();
     expect(result.events).toHaveLength(1);
     expect(sent).toHaveLength(1);
@@ -285,7 +357,7 @@ describe("MonitorService", () => {
     async (enabled) => {
       const fetcher = vi.fn(async (input: RequestInfo | URL) =>
         String(input).includes("components.json")
-          ? jsonResponse({ components: [component("major_outage")] })
+          ? jsonResponse({ components: components("major_outage") })
           : jsonResponse({ summary: { ongoing_incidents: [incident()] } }),
       );
       const translator = new TranslationClient({
@@ -346,7 +418,7 @@ describe("MonitorService", () => {
   it.each(["admin-check", "telegram-check"] as const)(
     "keeps %s read-only and translates active incidents",
     async (trigger) => {
-      await createService(kv, notifier, "operational", [incident()]).runCron();
+      await createService(kv, notifier, "operational", []).runCron();
       const before = [...kv.values];
       const translator = new TranslationClient({
         baseUrl: "https://example.com",
@@ -450,7 +522,7 @@ function createService(
 ): MonitorService {
   const fetcher = vi.fn(async (input: RequestInfo | URL) =>
     String(input).includes("components")
-      ? jsonResponse({ components: [component(status)] })
+      ? jsonResponse({ components: components(status) })
       : jsonResponse({ summary: { ongoing_incidents: incidents } }),
   );
   const env: Env = { STATUS_KV: kv.asNamespace() };

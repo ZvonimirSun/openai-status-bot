@@ -90,6 +90,23 @@ describe("message formatting", () => {
     expect(reply).toContain("当前事件详情暂不可用");
   });
 
+  it("shows keyword incidents even when the official component status is operational", () => {
+    const reply = buildCurrentStatusReply(
+      { ...current, incidents: [incident("Codex errors")] },
+      "Asia/Shanghai",
+    );
+    expect(reply).toContain("有活动故障事件");
+    expect(reply).toContain("Codex errors");
+  });
+
+  it("warns when incidents cannot be checked even if components are operational", () => {
+    const reply = buildCurrentStatusReply(
+      { ...current, incidentFeedDegraded: true },
+      "Asia/Shanghai",
+    );
+    expect(reply).toContain("当前事件详情暂不可用");
+  });
+
   it("shows translated and original current incident content", () => {
     const reply = buildCurrentStatusReply(
       {

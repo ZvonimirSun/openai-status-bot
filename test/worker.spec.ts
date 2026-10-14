@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import type { Env } from "../src/types";
-import { component, incident, jsonResponse, MemoryKv } from "./helpers";
+import { components, incident, jsonResponse, MemoryKv } from "./helpers";
 
 describe("worker handlers", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -51,7 +51,7 @@ describe("worker handlers", () => {
         const url = String(input);
         expect(init?.signal).toBeInstanceOf(AbortSignal);
         if (url.includes("components"))
-          return jsonResponse({ components: [component("major_outage")] });
+          return jsonResponse({ components: components("major_outage") });
         if (url.includes("/proxy/"))
           return jsonResponse({
             summary: {
@@ -134,7 +134,11 @@ describe("worker handlers", () => {
   it("queries without any KV binding and returns only the current snapshot", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => jsonResponse({ components: [component()] })),
+      vi.fn(async (input: RequestInfo | URL) =>
+        String(input).includes("components.json")
+          ? jsonResponse({ components: components() })
+          : jsonResponse({ summary: { ongoing_incidents: [] } }),
+      ),
     );
     const response = await worker.fetch(
       new Request("https://example.com/admin/check", {
@@ -149,6 +153,7 @@ describe("worker handlers", () => {
       "component",
       "incidentFeedDegraded",
       "incidents",
+      "monitoredComponents",
       "ok",
     ]);
   });
@@ -163,7 +168,9 @@ describe("worker handlers", () => {
         const url = String(input);
         calls.push(url);
         if (url.includes("components"))
-          return jsonResponse({ components: [component()] });
+          return jsonResponse({ components: components() });
+        if (url.includes("/proxy/"))
+          return jsonResponse({ summary: { ongoing_incidents: [] } });
         if (url.includes("api.telegram.org")) {
           replies.push(JSON.parse(String(init?.body)).text);
           return jsonResponse({ ok: true });
@@ -204,7 +211,7 @@ describe("worker handlers", () => {
     await Promise.all(pending);
     expect(kv.puts).toBe(0);
     expect(kv.gets).toBe(0);
-    expect(replies[0]!.split("\n")).toHaveLength(2);
+    expect(replies[0]!.split("\n")).toHaveLength(3);
     expect(replies[0]).toContain("正常");
     expect(
       calls.filter((url) => url.includes("api.telegram.org")),
