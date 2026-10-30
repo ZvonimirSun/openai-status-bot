@@ -158,63 +158,265 @@ describe("worker handlers", () => {
     ]);
   });
 
-  it("handles Telegram /check as read-only and only replies to the configured chat", async () => {
-    const kv = new MemoryKv();
-    const calls: string[] = [];
-    const replies: string[] = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        calls.push(url);
-        if (url.includes("components"))
-          return jsonResponse({ components: components() });
-        if (url.includes("/proxy/"))
-          return jsonResponse({ summary: { ongoing_incidents: [] } });
-        if (url.includes("api.telegram.org")) {
-          replies.push(JSON.parse(String(init?.body)).text);
-          return jsonResponse({ ok: true });
-        }
-        return jsonResponse({}, 404);
-      }),
-    );
-    const env: Env = {
-      STATUS_KV: kv.asNamespace(),
-      TELEGRAM_BOT_TOKEN: "token",
-      TELEGRAM_CHAT_ID: "123",
-      TELEGRAM_WEBHOOK_SECRET: "hook-secret",
-      WECOM_WEBHOOK_URL: "https://wecom.example",
-    };
-    const pending: Promise<unknown>[] = [];
-    const ctx = {
-      waitUntil(promise: Promise<unknown>) {
-        pending.push(promise);
-      },
-      passThroughOnException() {},
-      props: {},
-    } as unknown as ExecutionContext;
+  it.each([
+    {
+      text: "/check",
+      chatType: "private",
+      threadId: undefined,
+      configuredThread: undefined,
+    },
+    {
+      text: "/check@Status_Bot",
+      chatType: "supergroup",
+      threadId: 42,
+      configuredThread: "99",
+    },
+    {
+      text: "/CHECK@STATUS_BOT",
+      chatType: "supergroup",
+      threadId: 42,
+      configuredThread: undefined,
+    },
+    {
+      text: "/check",
+      chatType: "private",
+      threadId: undefined,
+      configuredThread: "99",
+    },
+    {
+      text: "/check",
+      chatType: "supergroup",
+      threadId: 42,
+      configuredThread: "42",
+    },
+    {
+      text: "/check@status_bot",
+      chatType: "group",
+      threadId: undefined,
+      configuredThread: undefined,
+    },
+  ])(
+    "handles Telegram checks as read-only in their original topic %j",
+    async ({ text, chatType, threadId, configuredThread }) => {
+      const kv = new MemoryKv();
+      const calls: string[] = [];
+      const replies: string[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = String(input);
+          calls.push(url);
+          if (url.includes("components"))
+            return jsonResponse({ components: components() });
+          if (url.includes("/proxy/"))
+            return jsonResponse({ summary: { ongoing_incidents: [] } });
+          if (url.endsWith("/getMe"))
+            return jsonResponse({
+              ok: true,
+              result: { is_bot: true, username: "status_bot" },
+            });
+          if (url.includes("api.telegram.org")) {
+            const body = JSON.parse(String(init?.body));
+            expect(body.chat_id).toBe("123");
+            expect(body.message_thread_id).toBe(threadId);
+            replies.push(body.text);
+            return jsonResponse({ ok: true });
+          }
+          return jsonResponse({}, 404);
+        }),
+      );
+      const env: Env = {
+        STATUS_KV: kv.asNamespace(),
+        TELEGRAM_BOT_TOKEN: `token-${text}-${configuredThread}`,
+        TELEGRAM_CHAT_ID: "123",
+        TELEGRAM_WEBHOOK_SECRET: "hook-secret",
+        ...(configuredThread === undefined
+          ? {}
+          : { TELEGRAM_MESSAGE_THREAD_ID: configuredThread }),
+        WECOM_WEBHOOK_URL: "https://wecom.example",
+      };
+      const pending: Promise<unknown>[] = [];
+      const ctx = {
+        waitUntil(promise: Promise<unknown>) {
+          pending.push(promise);
+        },
+        passThroughOnException() {},
+        props: {},
+      } as unknown as ExecutionContext;
+      const response = await worker.fetch(
+        new Request("https://example.com/telegram/webhook", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Telegram-Bot-Api-Secret-Token": "hook-secret",
+          },
+          body: JSON.stringify({
+            message: {
+              chat: { id: 123, type: chatType },
+              text,
+              message_thread_id: threadId,
+            },
+          }),
+        }),
+        env,
+        ctx,
+      );
+      expect(response.status).toBe(200);
+      await Promise.all(pending);
+      expect(kv.puts).toBe(0);
+      expect(kv.gets).toBe(0);
+      expect(replies[0]!.split("\n")).toHaveLength(3);
+      expect(replies[0]).toContain("正常");
+      expect(calls.filter((url) => url.endsWith("/sendMessage"))).toHaveLength(
+        1,
+      );
+    },
+  );
+
+  it.each([
+    { text: "/check@other_bot", chatId: 123, status: 200 },
+    { text: "/checker", chatId: 123, status: 200 },
+    { text: "@status_bot /check", chatId: 123, status: 200 },
+    { text: "/check@status_bot", chatId: 456, status: 401 },
+  ])(
+    "does not execute unintended commands %j",
+    async ({ text, chatId, status }) => {
+      const fetcher = vi.fn(async () =>
+        jsonResponse({
+          ok: true,
+          result: { is_bot: true, username: "status_bot" },
+        }),
+      );
+      vi.stubGlobal("fetch", fetcher);
+      const response = await worker.fetch(
+        new Request("https://example.com/telegram/webhook", {
+          method: "POST",
+          headers: { "X-Telegram-Bot-Api-Secret-Token": "secret" },
+          body: JSON.stringify({
+            message: { chat: { id: chatId, type: "supergroup" }, text },
+          }),
+        }),
+        {
+          TELEGRAM_BOT_TOKEN: `unintended-${text}`,
+          TELEGRAM_CHAT_ID: "123",
+          TELEGRAM_WEBHOOK_SECRET: "secret",
+        },
+      );
+      expect(response.status).toBe(status);
+      expect(fetcher).toHaveBeenCalledTimes(
+        text === "/check@other_bot" ? 1 : 0,
+      );
+    },
+  );
+
+  it.each([
+    {
+      text: "/check",
+      chatType: "group",
+      threadId: undefined,
+      configuredThread: undefined,
+    },
+    {
+      text: "/check",
+      chatType: "supergroup",
+      threadId: 42,
+      configuredThread: undefined,
+    },
+    {
+      text: "/check",
+      chatType: "supergroup",
+      threadId: 42,
+      configuredThread: "99",
+    },
+    {
+      text: "/check",
+      chatType: "supergroup",
+      threadId: undefined,
+      configuredThread: "42",
+    },
+    {
+      text: "/check@other_bot",
+      chatType: "supergroup",
+      threadId: 42,
+      configuredThread: "42",
+    },
+    {
+      text: "hello",
+      chatType: "supergroup",
+      threadId: 42,
+      configuredThread: "42",
+    },
+    {
+      text: "@status_bot hello",
+      chatType: "supergroup",
+      threadId: 42,
+      configuredThread: "42",
+    },
+    {
+      text: "/check",
+      chatType: "channel",
+      threadId: 42,
+      configuredThread: "42",
+    },
+  ])(
+    "ignores non-target group commands and ordinary text %j",
+    async ({ text, chatType, threadId, configuredThread }) => {
+      const fetcher = vi.fn(async () =>
+        jsonResponse({
+          ok: true,
+          result: { is_bot: true, username: "status_bot" },
+        }),
+      );
+      vi.stubGlobal("fetch", fetcher);
+      const response = await worker.fetch(
+        new Request("https://example.com/telegram/webhook", {
+          method: "POST",
+          headers: { "X-Telegram-Bot-Api-Secret-Token": "secret" },
+          body: JSON.stringify({
+            message: {
+              chat: { id: 123, type: chatType },
+              text,
+              message_thread_id: threadId,
+            },
+          }),
+        }),
+        {
+          TELEGRAM_BOT_TOKEN: `ignored-${text}`,
+          TELEGRAM_CHAT_ID: "123",
+          TELEGRAM_WEBHOOK_SECRET: "secret",
+          ...(configuredThread === undefined
+            ? {}
+            : { TELEGRAM_MESSAGE_THREAD_ID: configuredThread }),
+        },
+      );
+      expect(response.status).toBe(200);
+      expect(fetcher).toHaveBeenCalledTimes(
+        text === "/check@other_bot" ? 1 : 0,
+      );
+    },
+  );
+
+  it("returns a retryable response when bot identity cannot be verified", async () => {
+    const fetcher = vi.fn(async () => jsonResponse({ ok: false }, 503));
+    vi.stubGlobal("fetch", fetcher);
     const response = await worker.fetch(
       new Request("https://example.com/telegram/webhook", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Telegram-Bot-Api-Secret-Token": "hook-secret",
-        },
+        headers: { "X-Telegram-Bot-Api-Secret-Token": "secret" },
         body: JSON.stringify({
-          message: { chat: { id: 123 }, text: "/check" },
+          message: {
+            chat: { id: 123, type: "group" },
+            text: "/check@status_bot",
+          },
         }),
       }),
-      env,
-      ctx,
+      {
+        TELEGRAM_BOT_TOKEN: "identity-failure",
+        TELEGRAM_CHAT_ID: "123",
+        TELEGRAM_WEBHOOK_SECRET: "secret",
+      },
     );
-    expect(response.status).toBe(200);
-    await Promise.all(pending);
-    expect(kv.puts).toBe(0);
-    expect(kv.gets).toBe(0);
-    expect(replies[0]!.split("\n")).toHaveLength(3);
-    expect(replies[0]).toContain("正常");
-    expect(
-      calls.filter((url) => url.includes("api.telegram.org")),
-    ).toHaveLength(1);
+    expect(response.status).toBe(503);
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 });

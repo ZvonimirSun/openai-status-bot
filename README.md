@@ -18,11 +18,12 @@
 
 以下普通变量可在 Cloudflare Dashboard 中配置；未配置时使用代码默认值：
 
-| 变量                    | 默认值                               | 用途                 |
-| ----------------------- | ------------------------------------ | -------------------- |
-| `TARGET_COMPONENT_NAME` | `Codex in ChatGPT Desktop,Codex API` | 逗号分隔的精确组件名 |
-| `DISPLAY_TIME_ZONE`     | `Asia/Shanghai`                      | 通知显示时区         |
-| `NOTIFY_ON_BOOTSTRAP`   | `false`                              | 首次运行是否通知     |
+| 变量                         | 默认值                               | 用途                                                        |
+| ---------------------------- | ------------------------------------ | ----------------------------------------------------------- |
+| `TARGET_COMPONENT_NAME`      | `Codex in ChatGPT Desktop,Codex API` | 逗号分隔的精确组件名                                        |
+| `DISPLAY_TIME_ZONE`          | `Asia/Shanghai`                      | 通知显示时区                                                |
+| `NOTIFY_ON_BOOTSTRAP`        | `false`                              | 首次运行是否通知                                            |
+| `TELEGRAM_MESSAGE_THREAD_ID` | 未设置                               | 可选，Telegram 群组话题 ID（正整数），Cron 通知发送到此话题 |
 
 Secrets：
 
@@ -79,11 +80,19 @@ curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
   }'
 ```
 
-在 `TELEGRAM_CHAT_ID` 对应的私聊或群中发送 `/check`。Worker 查询全部目标组件和当前事件，配置完整且存在相关事件时翻译内容，并仅回复该聊天。查询不读取基线、不读写 KV、不广播状态通知；事件仍由下一次 Cron 正常通知。单次查询内容和翻译共享 20 秒预算，回复最多 5 秒；仅发送一条有长度上限的查询回复，更多事件通过官方状态页查看。
+在 `TELEGRAM_CHAT_ID` 对应的私聊中发送 `/check`，或在群中使用下述命令格式。Worker 查询全部目标组件和当前事件，配置完整且存在相关事件时翻译内容，并仅回复该聊天。查询不读取基线、不读写 KV、不广播状态通知；事件仍由下一次 Cron 正常通知。单次查询内容和翻译共享 20 秒预算，回复最多 5 秒；仅发送一条有长度上限的查询回复，更多事件通过官方状态页查看。
 
 无相关事件时回复组件状态和检测时间。有相关事件时明确提示“有活动故障事件”，附加译文和官方原文，即使官方组件仍显示正常。Widget 失败时显示“当前事件详情暂不可用”。
 
-若 Bot 位于群组中且启用了 privacy mode，可使用 `/check@你的Bot用户名`。
+群组中使用 `/check@你的Bot用户名`，启用 privacy mode 时也可使用；`@你的Bot用户名 /check` 不是支持的命令格式。目前仅支持 `/check`，普通文本不处理。Worker 使用 Bot Token 调用 Telegram `getMe` 自动获取用户名并校验命令后缀（不区分大小写），忽略发给其他机器人的命令，无需配置用户名。用户名在各 Worker 实例中缓存 5 分钟；冷启动或缓存到期后会重新获取。获取失败时不会执行命令，webhook 返回 503 供 Telegram 重试。机器人需要有在目标群组/话题中发送消息的权限。
+
+### 群组话题
+
+向启用话题的超级群组推送时，将 `TELEGRAM_CHAT_ID` 设置为群组 ID（通常形如 `-100...`），并按需设置 `TELEGRAM_MESSAGE_THREAD_ID=42`。该值是目标话题的 `message_thread_id`，不是群组 ID 或话题名称；可从该话题内发送给机器人的命令所对应的 Telegram Update 中读取 `message.message_thread_id`。已启用 webhook 时不要使用 `getUpdates` 轮询同一机器人。
+
+未配置或留空时不发送 `message_thread_id`，保留原有聊天发送行为；非空值必须是正整数，配置错误会报错，不会自动降级发往其他位置。话题删除、关闭或权限不足导致 Telegram 拒绝投递时，沿用原有失败重试机制。
+
+群组中不带 Bot 后缀的 `/check` 只在配置的 `TELEGRAM_MESSAGE_THREAD_ID` 话题内响应；未配置话题或在其他话题时须使用 `/check@你的Bot用户名`。Telegram 必须将命令推送给机器人，是否能收到取决于隐私模式、管理员权限和 Telegram 的群组消息投递规则；管理员权限不是本程序的前置校验，也可以按需通过 BotFather 调整隐私模式。带 Bot 后缀的命令可在群中任何话题使用。所有命令仍只允许配置的 Chat ID，回复发送到发起命令的原话题；若命令没有话题 ID，回复也不附加话题 ID。修改通知话题视为更换投递目标，旧目标尚未完成的投递会跳过，不会把旧批次转发至新话题。
 
 ## Cloudflare 首次部署
 
@@ -96,6 +105,7 @@ curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
 ```dotenv
 # TELEGRAM_BOT_TOKEN=...
 # TELEGRAM_CHAT_ID=...
+# TELEGRAM_MESSAGE_THREAD_ID=42
 # TELEGRAM_WEBHOOK_SECRET=...
 CHECK_TOKEN=...
 TRANSLATION_API_KEY=...
@@ -131,7 +141,7 @@ npm run deploy
 
 Widget 是官网使用的代理接口，并非稳定性有保证的公开 API；结构校验失败按事件源不可用处理，保留旧事件集合，不推断恢复。
 
-升级时可在 Dashboard 删除已废弃变量 `INCIDENT_MATCH_MODE`。其他变量、KV、Secret、Cron 和构建部署配置不变。发布后检查一次正常 Cron 和 `/check`；每次轮询应查询组件及当前事件，无变化时无 KV 写入，查询不读写 KV。若 Dashboard 已设置旧的 `TARGET_COMPONENT_NAME=Codex API` 或单独 Desktop，应删除该覆盖值或改成 `Codex in ChatGPT Desktop,Codex API`，否则仍只检查一个组件的状态。已有未完成通知仍按原投递机制先重试，不自动清除。
+升级时可在 Dashboard 删除已废弃变量 `INCIDENT_MATCH_MODE` 和 `TELEGRAM_BOT_USERNAME`。其他变量、KV、Secret、Cron 和构建部署配置不变。发布后检查一次正常 Cron 和 `/check`；每次轮询应查询组件及当前事件，无变化时无 KV 写入，查询不读写 KV。若 Dashboard 已设置旧的 `TARGET_COMPONENT_NAME=Codex API` 或单独 Desktop，应删除该覆盖值或改成 `Codex in ChatGPT Desktop,Codex API`，否则仍只检查一个组件的状态。已有未完成通知仍按原投递机制先重试，不自动清除。
 
 ## 通知内容
 

@@ -12,6 +12,33 @@ export interface Notifier {
   send(parts: string[], progress?: DeliveryProgress): Promise<void>;
 }
 
+let cachedBot:
+  { token: string; username: string; expiresAt: number } | undefined;
+
+export async function telegramBotUsername(token: string): Promise<string> {
+  if (cachedBot?.token === token && cachedBot.expiresAt > Date.now())
+    return cachedBot.username;
+  const response = await fetch.call(
+    globalThis,
+    `https://api.telegram.org/bot${token}/getMe`,
+    { signal: AbortSignal.timeout(5_000) },
+  );
+  const payload = await readJson(response);
+  if (
+    !response.ok ||
+    !isRecord(payload) ||
+    payload.ok !== true ||
+    !isRecord(payload.result) ||
+    payload.result.is_bot !== true ||
+    typeof payload.result.username !== "string" ||
+    !/^[A-Za-z0-9_]+$/.test(payload.result.username)
+  )
+    throw new Error("Telegram getMe failed");
+  const username = payload.result.username.toLowerCase();
+  cachedBot = { token, username, expiresAt: Date.now() + 5 * 60_000 };
+  return username;
+}
+
 export class CompositeNotifier implements Notifier {
   constructor(
     private readonly notifiers: { id: string; notifier: Notifier }[],
@@ -59,13 +86,19 @@ export class TelegramNotifier implements Notifier {
     private readonly chatId: string,
     private readonly fetcher: typeof fetch = fetch,
     private readonly signal?: AbortSignal,
+    private readonly messageThreadId?: number,
   ) {}
 
   async send(parts: string[]): Promise<void> {
-    for (const part of parts) await this.sendToChat(this.chatId, part);
+    for (const part of parts)
+      await this.sendToChat(this.chatId, part, this.messageThreadId);
   }
 
-  async sendToChat(chatId: string, text: string): Promise<void> {
+  async sendToChat(
+    chatId: string,
+    text: string,
+    messageThreadId?: number,
+  ): Promise<void> {
     const response = await this.fetcher.call(
       globalThis,
       `https://api.telegram.org/bot${this.token}/sendMessage`,
@@ -77,6 +110,7 @@ export class TelegramNotifier implements Notifier {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chat_id: chatId,
+          message_thread_id: messageThreadId,
           text,
           disable_web_page_preview: true,
         }),
@@ -129,7 +163,7 @@ export async function createNotifier(
   const telegram = createTelegramClient(env, signal);
   if (telegram) {
     notifiers.push({
-      id: `telegram:${env.TELEGRAM_CHAT_ID!.trim()}`,
+      id: `telegram:${env.TELEGRAM_CHAT_ID!.trim()}${telegramThreadId(env) === undefined ? "" : `:thread:${telegramThreadId(env)}`}`,
       notifier: telegram,
     });
   }
@@ -148,7 +182,22 @@ export function createTelegramClient(
   const token = env.TELEGRAM_BOT_TOKEN?.trim();
   const chatId = env.TELEGRAM_CHAT_ID?.trim();
   if (!token || !chatId) return null;
-  return new TelegramNotifier(token, chatId, fetch, signal);
+  return new TelegramNotifier(
+    token,
+    chatId,
+    fetch,
+    signal,
+    telegramThreadId(env),
+  );
+}
+
+export function telegramThreadId(env: Env): number | undefined {
+  const value = env.TELEGRAM_MESSAGE_THREAD_ID?.trim();
+  if (!value) return undefined;
+  const id = Number(value);
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(id) || id <= 0)
+    throw new Error("TELEGRAM_MESSAGE_THREAD_ID must be a positive integer");
+  return id;
 }
 
 async function readJson(response: Response): Promise<unknown> {

@@ -4,6 +4,7 @@ import {
   createNotifier,
   createTelegramClient,
   TelegramNotifier,
+  telegramBotUsername,
   WeComNotifier,
 } from "../src/clients/notifiers";
 import type { DeliveryProgress } from "../src/clients/notifiers";
@@ -11,6 +12,44 @@ import type { Env } from "../src/types";
 import { jsonResponse } from "./helpers";
 
 describe("notification delivery", () => {
+  it("caches bot identity briefly per token and retries failures", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ ok: false }, 503))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ok: true,
+          result: { is_bot: true, username: "First_Bot" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ok: true,
+          result: { is_bot: true, username: "Renamed_Bot" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ok: true,
+          result: { is_bot: true, username: "Second_Bot" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      await expect(telegramBotUsername("identity-one")).rejects.toThrow();
+      expect(await telegramBotUsername("identity-one")).toBe("first_bot");
+      expect(await telegramBotUsername("identity-one")).toBe("first_bot");
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      now.mockReturnValue(301_001);
+      expect(await telegramBotUsername("identity-one")).toBe("renamed_bot");
+      expect(await telegramBotUsername("identity-two")).toBe("second_bot");
+      expect(fetcher).toHaveBeenCalledTimes(4);
+    } finally {
+      now.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
   it.each<Env>([
     {},
     { TELEGRAM_BOT_TOKEN: "token" },
@@ -39,6 +78,52 @@ describe("notification delivery", () => {
       expect.stringMatching(/^wecom:/),
     ]);
   });
+
+  it.each([undefined, "", " ", " 42 "])(
+    "routes notifications to optional topic %j",
+    async (threadId) => {
+      const fetcher = vi.fn(async () => jsonResponse({ ok: true }));
+      vi.stubGlobal("fetch", fetcher);
+      try {
+        const notifier = await createNotifier({
+          TELEGRAM_BOT_TOKEN: "token",
+          TELEGRAM_CHAT_ID: "-100123",
+          ...(threadId === undefined
+            ? {}
+            : { TELEGRAM_MESSAGE_THREAD_ID: threadId }),
+        });
+        expect(await notifier.channelIds()).toEqual([
+          threadId?.trim() ? "telegram:-100123:thread:42" : "telegram:-100123",
+        ]);
+        await notifier.send(["first", "second"]);
+        expect(fetcher).toHaveBeenCalledTimes(2);
+        for (const call of fetcher.mock.calls as unknown as [
+          string,
+          RequestInit,
+        ][]) {
+          const body = JSON.parse(String(call[1].body));
+          expect(body.chat_id).toBe("-100123");
+          if (threadId?.trim()) expect(body.message_thread_id).toBe(42);
+          else expect(body).not.toHaveProperty("message_thread_id");
+        }
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
+  it.each(["0", "-1", "1.5", "abc", "1e2", "9007199254740992"])(
+    "rejects invalid topic ID %s",
+    (threadId) => {
+      expect(() =>
+        createTelegramClient({
+          TELEGRAM_BOT_TOKEN: "token",
+          TELEGRAM_CHAT_ID: "123",
+          TELEGRAM_MESSAGE_THREAD_ID: threadId,
+        }),
+      ).toThrow("positive integer");
+    },
+  );
   it("finishes healthy channels and resumes only missing parts", async () => {
     const telegram = { send: vi.fn(async () => {}) };
     const wecom = {

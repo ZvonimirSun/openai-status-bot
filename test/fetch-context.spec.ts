@@ -85,7 +85,7 @@ describe("Workers fetch receiver", () => {
           "X-Telegram-Bot-Api-Secret-Token": "secret",
         },
         body: JSON.stringify({
-          message: { chat: { id: 123 }, text: "/check" },
+          message: { chat: { id: 123, type: "private" }, text: "/check" },
         }),
       }),
       env,

@@ -1,7 +1,12 @@
 import { loadConfig, resolveKv } from "./config";
 import { OpenAIStatusClient } from "./clients/openai-status";
 import { TranslationClient } from "./clients/translation-client";
-import { createNotifier, createTelegramClient } from "./clients/notifiers";
+import {
+  createNotifier,
+  createTelegramClient,
+  telegramBotUsername,
+  telegramThreadId,
+} from "./clients/notifiers";
 import { buildCurrentStatusReply } from "./domain/message";
 import { MonitorStateRepository } from "./repositories/monitor-state";
 import { MonitorService } from "./services/monitor";
@@ -97,16 +102,46 @@ async function handleTelegramWebhook(
   }
   const update = (await request.json()) as unknown;
   const message = readTelegramMessage(update);
-  if (!message || !isCheckCommand(message.text))
-    return Response.json({ ok: true });
+  if (!message) return Response.json({ ok: true });
+  const command = /^\/check(?:@([A-Za-z0-9_]+))?(?:\s|$)/i.exec(
+    message.text.trim(),
+  );
+  if (!command) return Response.json({ ok: true });
   if (message.chatId !== env.TELEGRAM_CHAT_ID?.trim()) return unauthorized();
-  const work = processTelegramCheck(env, message.chatId);
+  if (command[1]) {
+    try {
+      if (
+        command[1].toLowerCase() !==
+        (await telegramBotUsername(env.TELEGRAM_BOT_TOKEN!.trim()))
+      )
+        return Response.json({ ok: true });
+    } catch {
+      console.warn("Telegram getMe failed; command will be retried");
+      return Response.json(
+        { ok: false, error: "telegram_unavailable" },
+        { status: 503 },
+      );
+    }
+  } else if (message.chatType !== "private") {
+    const topic = telegramThreadId(env);
+    if (topic === undefined || message.messageThreadId !== topic)
+      return Response.json({ ok: true });
+  }
+  const work = processTelegramCheck(
+    env,
+    message.chatId,
+    message.messageThreadId,
+  );
   if (ctx) ctx.waitUntil(work);
   else await work;
   return Response.json({ ok: true });
 }
 
-async function processTelegramCheck(env: Env, chatId: string): Promise<void> {
+async function processTelegramCheck(
+  env: Env,
+  chatId: string,
+  messageThreadId?: number,
+): Promise<void> {
   const config = loadConfig(env);
   let reply: string;
   try {
@@ -118,22 +153,43 @@ async function processTelegramCheck(env: Env, chatId: string): Promise<void> {
     reply = "Codex 实时检查失败，请稍后重试。";
   }
   const telegram = createTelegramClient(env, AbortSignal.timeout(5_000));
-  if (telegram) await telegram.sendToChat(chatId, reply);
+  if (telegram) await telegram.sendToChat(chatId, reply, messageThreadId);
 }
 
-function readTelegramMessage(
-  value: unknown,
-): { chatId: string; text: string } | null {
+function readTelegramMessage(value: unknown): TelegramMessage | null {
   if (!isRecord(value) || !isRecord(value.message)) return null;
   const message = value.message;
   if (!isRecord(message.chat) || typeof message.text !== "string") return null;
   const id = message.chat.id;
   if (typeof id !== "string" && typeof id !== "number") return null;
-  return { chatId: String(id), text: message.text };
+  const chatType = message.chat.type;
+  if (
+    chatType !== "private" &&
+    chatType !== "group" &&
+    chatType !== "supergroup"
+  )
+    return null;
+  const threadId = message.message_thread_id;
+  if (
+    threadId !== undefined &&
+    (typeof threadId !== "number" ||
+      !Number.isSafeInteger(threadId) ||
+      threadId <= 0)
+  )
+    return null;
+  return {
+    chatId: String(id),
+    chatType,
+    text: message.text,
+    ...(threadId === undefined ? {} : { messageThreadId: threadId }),
+  };
 }
 
-function isCheckCommand(text: string): boolean {
-  return /^\/check(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text.trim());
+interface TelegramMessage {
+  chatId: string;
+  chatType: "private" | "group" | "supergroup";
+  text: string;
+  messageThreadId?: number;
 }
 
 function unauthorized(): Response {

@@ -1,6 +1,8 @@
 # Optional Telegram notifications require both token and chat ID.
 # TELEGRAM_BOT_TOKEN=replace-with-telegram-bot-token
 # TELEGRAM_CHAT_ID=replace-with-telegram-chat-id
+# Optional forum topic ID for scheduled notifications (positive integer).
+# TELEGRAM_MESSAGE_THREAD_ID=42
 # Optional /check additionally requires a webhook secret.
 # TELEGRAM_WEBHOOK_SECRET=replace-with-telegram-webhook-secret
 CHECK_TOKEN=replace-with-a-long-random-token
