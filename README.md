@@ -9,7 +9,7 @@
 - 组件正常时也查询事件：标题或最新正文提到完整单词 `Codex` 时兜底通知，避免组件状态尚未更新时漏报。明确只关联 Codex Web 的事件排除；无目标关联且明确写 Codex Web、Codex Cloud 或 web/cloud tasks 的事件排除。关联目标组件时优先保留，即使同时影响 Web。
 - 首次运行只建立基线，正常无变化时不写 KV。
 - OpenAI Widget 失败时，保留已知事件时间，仍可处理组件状态变化；`/check` 显示事件详情暂不可用，不把缺失数据当作无故障。
-- 支持 Telegram Bot `/check` 实时查询，仅回复当前状态和关联事件，不广播通知，不读写 KV。
+- 支持 Telegram Bot `/check` 实时查询，仅回复当前状态和关联事件，不广播通知，不写 KV。
 - 提供带 Bearer Token 的只读实时查询和状态诊断接口。
 - 使用单一 `STATUS_KV` binding 和 `CHECK_TOKEN` 管理 Token。
 - 可选调用第三方 OpenAI-compatible API，将 incident 标题和正文翻译为简体中文，同时保留官方英文原文。
@@ -18,12 +18,12 @@
 
 以下普通变量可在 Cloudflare Dashboard 中配置；未配置时使用代码默认值：
 
-| 变量                         | 默认值                               | 用途                                                        |
-| ---------------------------- | ------------------------------------ | ----------------------------------------------------------- |
-| `TARGET_COMPONENT_NAME`      | `Codex in ChatGPT Desktop,Codex API` | 逗号分隔的精确组件名                                        |
-| `DISPLAY_TIME_ZONE`          | `Asia/Shanghai`                      | 通知显示时区                                                |
-| `NOTIFY_ON_BOOTSTRAP`        | `false`                              | 首次运行是否通知                                            |
-| `TELEGRAM_MESSAGE_THREAD_ID` | 未设置                               | 可选，Telegram 群组话题 ID（正整数），Cron 通知发送到此话题 |
+| 变量                    | 默认值                               | 用途                                                              |
+| ----------------------- | ------------------------------------ | ----------------------------------------------------------------- |
+| `TARGET_COMPONENT_NAME` | `Codex in ChatGPT Desktop,Codex API` | 逗号分隔的精确组件名                                              |
+| `DISPLAY_TIME_ZONE`     | `Asia/Shanghai`                      | 通知显示时区                                                      |
+| `NOTIFY_ON_BOOTSTRAP`   | `false`                              | 首次运行是否通知                                                  |
+| `TELEGRAM_CHAT_MODE`    | `direct`                             | `direct` 直接发送到 Chat ID；`topic` 自动创建并复用机器人同名话题 |
 
 Secrets：
 
@@ -80,7 +80,7 @@ curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
   }'
 ```
 
-在 `TELEGRAM_CHAT_ID` 对应的私聊中发送 `/check`，或在群中使用下述命令格式。Worker 查询全部目标组件和当前事件，配置完整且存在相关事件时翻译内容，并仅回复该聊天。查询不读取基线、不读写 KV、不广播状态通知；事件仍由下一次 Cron 正常通知。单次查询内容和翻译共享 20 秒预算，回复最多 5 秒；仅发送一条有长度上限的查询回复，更多事件通过官方状态页查看。
+在 `TELEGRAM_CHAT_ID` 对应的私聊中发送 `/check`，或在群中使用下述命令格式。Worker 查询全部目标组件和当前事件，配置完整且存在相关事件时翻译内容，并仅回复该聊天。查询不读取基线、不写 KV、不广播状态通知；事件仍由下一次 Cron 正常通知。单次查询内容和翻译共享 20 秒预算，回复最多 5 秒；仅发送一条有长度上限的查询回复，更多事件通过官方状态页查看。
 
 无相关事件时回复组件状态和检测时间。有相关事件时明确提示“有活动故障事件”，附加译文和官方原文，即使官方组件仍显示正常。Widget 失败时显示“当前事件详情暂不可用”。
 
@@ -88,11 +88,15 @@ curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
 
 ### 群组话题
 
-向启用话题的超级群组推送时，将 `TELEGRAM_CHAT_ID` 设置为群组 ID（通常形如 `-100...`），并按需设置 `TELEGRAM_MESSAGE_THREAD_ID=42`。该值是目标话题的 `message_thread_id`，不是群组 ID 或话题名称；可从该话题内发送给机器人的命令所对应的 Telegram Update 中读取 `message.message_thread_id`。已启用 webhook 时不要使用 `getUpdates` 轮询同一机器人。
+默认 `TELEGRAM_CHAT_MODE=direct`：直接向 `TELEGRAM_CHAT_ID` 发送通知，不附加话题 ID（论坛群中为 General/常规话题）。无需手动配置话题 ID。
 
-未配置或留空时不发送 `message_thread_id`，保留原有聊天发送行为；非空值必须是正整数，配置错误会报错，不会自动降级发往其他位置。话题删除、关闭或权限不足导致 Telegram 拒绝投递时，沿用原有失败重试机制。
+设置 `TELEGRAM_CHAT_MODE=topic` 后，在实际发送通知前，Worker 校验目标是启用话题的超级群组，且机器人为管理员并具有 `can_manage_topics` 权限。首次发送时使用 `getMe` 返回的机器人显示名称创建话题，并将话题 ID 存入现有 `STATUS_KV`；之后复用记录。静默轮询和查询命令不会创建话题。权限不足或话题发送失败时不降级到 General，沿用通知重试机制，不影响其他通知渠道。其他非空模式值会报错。
 
-群组中不带 Bot 后缀的 `/check` 只在配置的 `TELEGRAM_MESSAGE_THREAD_ID` 话题内响应；未配置话题或在其他话题时须使用 `/check@你的Bot用户名`。Telegram 必须将命令推送给机器人，是否能收到取决于隐私模式、管理员权限和 Telegram 的群组消息投递规则；管理员权限不是本程序的前置校验，也可以按需通过 BotFather 调整隐私模式。带 Bot 后缀的命令可在群中任何话题使用。所有命令仍只允许配置的 Chat ID，回复发送到发起命令的原话题；若命令没有话题 ID，回复也不附加话题 ID。修改通知话题视为更换投递目标，旧目标尚未完成的投递会跳过，不会把旧批次转发至新话题。
+Telegram Bot API 无法列举群内话题，因此只能复用本机器人已创建并记录的话题，不能按名称发现或接管手动创建的同名话题。记录按群组及 Bot ID 隔离，轮换同一机器人的 Token 不会重新创建；修改机器人显示名称不会重命名已有话题。不要手动删除话题或清理其 KV 记录。若话题被关闭、删除或 Telegram 返回线程无效，Worker 会清除旧记录、自动创建新话题并仅重试当前消息一次；其他权限或网络错误仍按原有机制重试。
+
+群组中不带 Bot 后缀的 `/check` 只在 `topic` 模式且匹配已记录话题时响应；General 或其他话题中须使用 `/check@你的Bot用户名`。带 Bot 后缀的命令仍可在群中任何话题使用，回复留在发起命令的位置。命令仅允许配置的 Chat ID，普通文本不处理。Telegram 是否推送直接命令取决于隐私模式、管理员权限及其群组消息投递规则。
+
+话题记录使用现有免费额度内的 KV，不引入 Durable Objects、Queues 或其他付费服务。查询直接命令时在 topic 模式会读取话题记录，但不写 KV；每次新建话题增加一次 KV 写入。KV 最终一致，且无法与 Telegram 创建操作原子提交，因此极端并发、KV 记录丢失或创建响应丢失时可能产生同名话题；默认每 5 分钟的单一 Cron 可降低此风险，不能保证严格唯一。切换模式视为更换投递目标，旧模式尚未完成的通知会跳过，不会迁移到新模式。
 
 ## Cloudflare 首次部署
 
@@ -105,7 +109,7 @@ curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
 ```dotenv
 # TELEGRAM_BOT_TOKEN=...
 # TELEGRAM_CHAT_ID=...
-# TELEGRAM_MESSAGE_THREAD_ID=42
+# TELEGRAM_CHAT_MODE=topic
 # TELEGRAM_WEBHOOK_SECRET=...
 CHECK_TOKEN=...
 TRANSLATION_API_KEY=...
@@ -141,7 +145,7 @@ npm run deploy
 
 Widget 是官网使用的代理接口，并非稳定性有保证的公开 API；结构校验失败按事件源不可用处理，保留旧事件集合，不推断恢复。
 
-升级时可在 Dashboard 删除已废弃变量 `INCIDENT_MATCH_MODE` 和 `TELEGRAM_BOT_USERNAME`。其他变量、KV、Secret、Cron 和构建部署配置不变。发布后检查一次正常 Cron 和 `/check`；每次轮询应查询组件及当前事件，无变化时无 KV 写入，查询不读写 KV。若 Dashboard 已设置旧的 `TARGET_COMPONENT_NAME=Codex API` 或单独 Desktop，应删除该覆盖值或改成 `Codex in ChatGPT Desktop,Codex API`，否则仍只检查一个组件的状态。已有未完成通知仍按原投递机制先重试，不自动清除。
+升级时可在 Dashboard 删除已废弃变量 `INCIDENT_MATCH_MODE`、`TELEGRAM_BOT_USERNAME` 和 `TELEGRAM_MESSAGE_THREAD_ID`。其他变量、KV、Secret、Cron 和构建部署配置不变。发布后检查一次正常 Cron 和 `/check`；每次轮询应查询组件及当前事件，无变化时无 KV 写入，查询不写 KV。若 Dashboard 已设置旧的 `TARGET_COMPONENT_NAME=Codex API` 或单独 Desktop，应删除该覆盖值或改成 `Codex in ChatGPT Desktop,Codex API`，否则仍只检查一个组件的状态。已有未完成通知仍按原投递机制先重试，不自动清除。
 
 ## 通知内容
 
@@ -178,12 +182,12 @@ Cron 仅对新增当前事件或事件更新时间变化调用翻译；HTTP 和 
 
 ## HTTP 接口
 
-| 方法与路径               | 鉴权                   | 行为                                  |
-| ------------------------ | ---------------------- | ------------------------------------- |
-| `GET /healthz`           | 无                     | 健康检查，不读取 KV 或 OpenAI         |
-| `POST /admin/check`      | Bearer                 | 返回当前状态与译文，不通知、不读写 KV |
-| `GET /admin/state`       | Bearer                 | 返回清理后的当前状态                  |
-| `POST /telegram/webhook` | Telegram secret header | 响应 `/check`                         |
+| 方法与路径               | 鉴权                   | 行为                                |
+| ------------------------ | ---------------------- | ----------------------------------- |
+| `GET /healthz`           | 无                     | 健康检查，不读取 KV 或 OpenAI       |
+| `POST /admin/check`      | Bearer                 | 返回当前状态与译文，不通知、不写 KV |
+| `GET /admin/state`       | Bearer                 | 返回清理后的当前状态                |
+| `POST /telegram/webhook` | Telegram secret header | 响应 `/check`                       |
 
 ## Cloudflare Workers Builds
 
@@ -221,4 +225,4 @@ Cron 在发送前持久化待投递内容，并为每个渠道/分片写入独�
 
 ## 免费套餐用量
 
-按面板设置每 5 分钟运行，每天 288 次 Cron；每次查询组件和 Widget，约 576 次状态源 HTTP 请求，每分钟运行则约 2880 次，失败重试另计。保留现有投递机制，无变化时通常每次读取 KV 2 次（已有完成投递记录时为 3 次），不调用翻译、不通知、不写 KV。KV 写入和回执仅随真实变化增加，失败投递仅在后续 Cron 重试。人工查询不读写 KV，仅产生状态源请求，以及配置完整且有异常详情时的翻译调用。生产配置全部在 Cloudflare Dashboard 维护，部署只更新代码。
+按面板设置每 5 分钟运行，每天 288 次 Cron；每次查询组件和 Widget，约 576 次状态源 HTTP 请求，每分钟运行则约 2880 次，失败重试另计。保留现有投递机制，无变化时通常每次读取 KV 2 次（已有完成投递记录时为 3 次），不调用翻译、不通知、不写 KV。KV 写入和回执仅随真实变化增加，失败投递仅在后续 Cron 重试。人工查询不写 KV，仅产生状态源请求，以及配置完整且有异常详情时的翻译调用。生产配置全部在 Cloudflare Dashboard 维护，部署只更新代码。

@@ -5,8 +5,8 @@ import {
   createNotifier,
   createTelegramClient,
   telegramBotUsername,
-  telegramThreadId,
 } from "./clients/notifiers";
+import { readTelegramTopic } from "./clients/telegram-topic";
 import { buildCurrentStatusReply } from "./domain/message";
 import { MonitorStateRepository } from "./repositories/monitor-state";
 import { MonitorService } from "./services/monitor";
@@ -123,8 +123,8 @@ async function handleTelegramWebhook(
       );
     }
   } else if (message.chatType !== "private") {
-    const topic = telegramThreadId(env);
-    if (topic === undefined || message.messageThreadId !== topic)
+    const topic = await readTelegramTopic(env);
+    if (topic === null || message.messageThreadId !== topic)
       return Response.json({ ok: true });
   }
   const work = processTelegramCheck(

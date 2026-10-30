@@ -79,51 +79,42 @@ describe("notification delivery", () => {
     ]);
   });
 
-  it.each([undefined, "", " ", " 42 "])(
-    "routes notifications to optional topic %j",
-    async (threadId) => {
+  it.each([undefined, "", "direct"])(
+    "defaults to direct delivery %j",
+    async (mode) => {
       const fetcher = vi.fn(async () => jsonResponse({ ok: true }));
       vi.stubGlobal("fetch", fetcher);
       try {
         const notifier = await createNotifier({
           TELEGRAM_BOT_TOKEN: "token",
-          TELEGRAM_CHAT_ID: "-100123",
-          ...(threadId === undefined
-            ? {}
-            : { TELEGRAM_MESSAGE_THREAD_ID: threadId }),
+          TELEGRAM_CHAT_ID: "123",
+          ...(mode === undefined ? {} : { TELEGRAM_CHAT_MODE: mode }),
         });
-        expect(await notifier.channelIds()).toEqual([
-          threadId?.trim() ? "telegram:-100123:thread:42" : "telegram:-100123",
-        ]);
-        await notifier.send(["first", "second"]);
-        expect(fetcher).toHaveBeenCalledTimes(2);
-        for (const call of fetcher.mock.calls as unknown as [
-          string,
-          RequestInit,
-        ][]) {
-          const body = JSON.parse(String(call[1].body));
-          expect(body.chat_id).toBe("-100123");
-          if (threadId?.trim()) expect(body.message_thread_id).toBe(42);
-          else expect(body).not.toHaveProperty("message_thread_id");
-        }
+        await notifier.send(["body"]);
+        expect(fetcher).toHaveBeenCalledTimes(1);
+        expect(
+          JSON.parse(
+            String(
+              (fetcher.mock.calls as unknown as [string, RequestInit][])[0]![1]
+                .body,
+            ),
+          ),
+        ).not.toHaveProperty("message_thread_id");
       } finally {
         vi.unstubAllGlobals();
       }
     },
   );
 
-  it.each(["0", "-1", "1.5", "abc", "1e2", "9007199254740992"])(
-    "rejects invalid topic ID %s",
-    (threadId) => {
-      expect(() =>
-        createTelegramClient({
-          TELEGRAM_BOT_TOKEN: "token",
-          TELEGRAM_CHAT_ID: "123",
-          TELEGRAM_MESSAGE_THREAD_ID: threadId,
-        }),
-      ).toThrow("positive integer");
-    },
-  );
+  it("rejects invalid chat mode", () => {
+    expect(() =>
+      createTelegramClient({
+        TELEGRAM_BOT_TOKEN: "token",
+        TELEGRAM_CHAT_ID: "123",
+        TELEGRAM_CHAT_MODE: "invalid",
+      }),
+    ).toThrow("direct or topic");
+  });
   it("finishes healthy channels and resumes only missing parts", async () => {
     const telegram = { send: vi.fn(async () => {}) };
     const wecom = {

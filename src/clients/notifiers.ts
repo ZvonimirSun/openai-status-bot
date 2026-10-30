@@ -1,5 +1,6 @@
 import type { Env } from "../types";
 import { sha256 } from "../utils/hash";
+import { TelegramTopicNotifier, telegramTopicMode } from "./telegram-topic";
 
 export interface DeliveryProgress {
   channels: string[];
@@ -10,6 +11,15 @@ export interface DeliveryProgress {
 export interface Notifier {
   channelIds?(): Promise<string[]>;
   send(parts: string[], progress?: DeliveryProgress): Promise<void>;
+}
+
+export class TelegramApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly description: string,
+  ) {
+    super(`Telegram API request failed with HTTP ${status}: ${description}`);
+  }
 }
 
 let cachedBot:
@@ -117,11 +127,13 @@ export class TelegramNotifier implements Notifier {
       },
     );
     const payload = await readJson(response);
-    if (!response.ok || !isRecord(payload) || payload.ok !== true) {
-      throw new Error(
-        `Telegram API request failed with HTTP ${response.status}`,
+    if (!response.ok || !isRecord(payload) || payload.ok !== true)
+      throw new TelegramApiError(
+        response.status,
+        isRecord(payload) && typeof payload.description === "string"
+          ? payload.description
+          : "unknown error",
       );
-    }
   }
 }
 
@@ -163,8 +175,10 @@ export async function createNotifier(
   const telegram = createTelegramClient(env, signal);
   if (telegram) {
     notifiers.push({
-      id: `telegram:${env.TELEGRAM_CHAT_ID!.trim()}${telegramThreadId(env) === undefined ? "" : `:thread:${telegramThreadId(env)}`}`,
-      notifier: telegram,
+      id: `telegram:${env.TELEGRAM_CHAT_ID!.trim()}${telegramTopicMode(env) ? ":topic" : ""}`,
+      notifier: telegramTopicMode(env)
+        ? new TelegramTopicNotifier(env, telegram, signal)
+        : telegram,
     });
   }
   if (env.WECOM_WEBHOOK_URL)
@@ -182,22 +196,8 @@ export function createTelegramClient(
   const token = env.TELEGRAM_BOT_TOKEN?.trim();
   const chatId = env.TELEGRAM_CHAT_ID?.trim();
   if (!token || !chatId) return null;
-  return new TelegramNotifier(
-    token,
-    chatId,
-    fetch,
-    signal,
-    telegramThreadId(env),
-  );
-}
-
-export function telegramThreadId(env: Env): number | undefined {
-  const value = env.TELEGRAM_MESSAGE_THREAD_ID?.trim();
-  if (!value) return undefined;
-  const id = Number(value);
-  if (!/^\d+$/.test(value) || !Number.isSafeInteger(id) || id <= 0)
-    throw new Error("TELEGRAM_MESSAGE_THREAD_ID must be a positive integer");
-  return id;
+  telegramTopicMode(env);
+  return new TelegramNotifier(token, chatId, fetch, signal);
 }
 
 async function readJson(response: Response): Promise<unknown> {

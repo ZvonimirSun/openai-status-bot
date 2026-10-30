@@ -199,6 +199,11 @@ describe("worker handlers", () => {
     "handles Telegram checks as read-only in their original topic %j",
     async ({ text, chatType, threadId, configuredThread }) => {
       const kv = new MemoryKv();
+      if (configuredThread !== undefined)
+        kv.values.set(
+          `telegram:topic:v1:123:token-${text}-${configuredThread}`,
+          configuredThread,
+        );
       const calls: string[] = [];
       const replies: string[] = [];
       vi.stubGlobal(
@@ -232,7 +237,7 @@ describe("worker handlers", () => {
         TELEGRAM_WEBHOOK_SECRET: "hook-secret",
         ...(configuredThread === undefined
           ? {}
-          : { TELEGRAM_MESSAGE_THREAD_ID: configuredThread }),
+          : { TELEGRAM_CHAT_MODE: "topic" }),
         WECOM_WEBHOOK_URL: "https://wecom.example",
       };
       const pending: Promise<unknown>[] = [];
@@ -264,7 +269,13 @@ describe("worker handlers", () => {
       expect(response.status).toBe(200);
       await Promise.all(pending);
       expect(kv.puts).toBe(0);
-      expect(kv.gets).toBe(0);
+      expect(kv.gets).toBe(
+        text === "/check" &&
+          chatType !== "private" &&
+          configuredThread !== undefined
+          ? 1
+          : 0,
+      );
       expect(replies[0]!.split("\n")).toHaveLength(3);
       expect(replies[0]).toContain("正常");
       expect(calls.filter((url) => url.endsWith("/sendMessage"))).toHaveLength(
@@ -386,7 +397,10 @@ describe("worker handlers", () => {
           TELEGRAM_WEBHOOK_SECRET: "secret",
           ...(configuredThread === undefined
             ? {}
-            : { TELEGRAM_MESSAGE_THREAD_ID: configuredThread }),
+            : {
+                TELEGRAM_CHAT_MODE: "topic",
+                STATUS_KV: new MemoryKv().asNamespace(),
+              }),
         },
       );
       expect(response.status).toBe(200);
