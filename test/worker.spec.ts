@@ -160,6 +160,36 @@ describe("worker handlers", () => {
 
   it.each([
     {
+      text: " @status_bot   /check ",
+      chatType: "supergroup",
+      threadId: undefined,
+      configuredThread: undefined,
+    },
+    {
+      text: "@status_bot /check @STATUS_BOT",
+      chatType: "supergroup",
+      threadId: 42,
+      configuredThread: "42",
+    },
+    {
+      text: "/check @status_bot",
+      chatType: "supergroup",
+      threadId: undefined,
+      configuredThread: undefined,
+    },
+    {
+      text: " /CHECK   @STATUS_BOT ",
+      chatType: "supergroup",
+      threadId: 1,
+      configuredThread: "42",
+    },
+    {
+      text: "/check @status_bot",
+      chatType: "supergroup",
+      threadId: 42,
+      configuredThread: "42",
+    },
+    {
       text: "/check",
       chatType: "private",
       threadId: undefined,
@@ -286,8 +316,13 @@ describe("worker handlers", () => {
 
   it.each([
     { text: "/check@other_bot", chatId: 123, status: 200 },
+    { text: "/check @other_bot", chatId: 123, status: 200 },
+    { text: "/check @status_bot", chatId: 456, status: 401 },
+    { text: "/check @status_bot.invalid", chatId: 123, status: 200 },
+    { text: "/check @status_bot @other_bot", chatId: 123, status: 200 },
     { text: "/checker", chatId: 123, status: 200 },
-    { text: "@status_bot /check", chatId: 123, status: 200 },
+    { text: "hello @status_bot", chatId: 123, status: 200 },
+    { text: "/check extra @status_bot", chatId: 123, status: 200 },
     { text: "/check@status_bot", chatId: 456, status: 401 },
   ])(
     "does not execute unintended commands %j",
@@ -315,7 +350,7 @@ describe("worker handlers", () => {
       );
       expect(response.status).toBe(status);
       expect(fetcher).toHaveBeenCalledTimes(
-        text === "/check@other_bot" ? 1 : 0,
+        text.includes("@other_bot") ? 1 : 0,
       );
     },
   );

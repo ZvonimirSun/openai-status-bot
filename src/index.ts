@@ -103,16 +103,17 @@ async function handleTelegramWebhook(
   const update = (await request.json()) as unknown;
   const message = readTelegramMessage(update);
   if (!message) return Response.json({ ok: true });
-  const command = /^\/check(?:@([A-Za-z0-9_]+))?(?:\s|$)/i.exec(
-    message.text.trim(),
-  );
-  if (!command) return Response.json({ ok: true });
+  const mentions = message.text.match(/@[A-Za-z0-9_]+/g) ?? [];
+  const command = message.text.replace(/@[A-Za-z0-9_]+/g, "").trim();
+  if (command.toLowerCase() !== "/check") return Response.json({ ok: true });
   if (message.chatId !== env.TELEGRAM_CHAT_ID?.trim()) return unauthorized();
-  if (command[1]) {
+  if (mentions.length > 0) {
     try {
+      const username = await telegramBotUsername(
+        env.TELEGRAM_BOT_TOKEN!.trim(),
+      );
       if (
-        command[1].toLowerCase() !==
-        (await telegramBotUsername(env.TELEGRAM_BOT_TOKEN!.trim()))
+        mentions.some((mention) => mention.slice(1).toLowerCase() !== username)
       )
         return Response.json({ ok: true });
     } catch {
