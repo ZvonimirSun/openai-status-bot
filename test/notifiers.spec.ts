@@ -79,16 +79,18 @@ describe("notification delivery", () => {
     ]);
   });
 
-  it.each([undefined, "", "direct"])(
+  it.each([undefined, ""])(
     "defaults to direct delivery %j",
-    async (mode) => {
+    async (threadId) => {
       const fetcher = vi.fn(async () => jsonResponse({ ok: true }));
       vi.stubGlobal("fetch", fetcher);
       try {
         const notifier = await createNotifier({
           TELEGRAM_BOT_TOKEN: "token",
           TELEGRAM_CHAT_ID: "123",
-          ...(mode === undefined ? {} : { TELEGRAM_CHAT_MODE: mode }),
+          ...(threadId === undefined
+            ? {}
+            : { TELEGRAM_MESSAGE_THREAD_ID: threadId }),
         });
         await notifier.send(["body"]);
         expect(fetcher).toHaveBeenCalledTimes(1);
@@ -106,14 +108,37 @@ describe("notification delivery", () => {
     },
   );
 
-  it("rejects invalid chat mode", () => {
+  it("supports an explicit topic thread", async () => {
+    const fetcher = vi.fn(async () => jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetcher);
+    const notifier = await createNotifier({
+      TELEGRAM_BOT_TOKEN: "token",
+      TELEGRAM_CHAT_ID: "123",
+      TELEGRAM_MESSAGE_THREAD_ID: "42",
+    });
+    await notifier.send(["body"]);
+    expect(
+      JSON.parse(
+        String(
+          (fetcher.mock.calls as unknown as [string, RequestInit][])[0]![1]
+            .body,
+        ),
+      ),
+    ).toMatchObject({
+      chat_id: "123",
+      message_thread_id: 42,
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("rejects invalid topic thread", () => {
     expect(() =>
       createTelegramClient({
         TELEGRAM_BOT_TOKEN: "token",
         TELEGRAM_CHAT_ID: "123",
-        TELEGRAM_CHAT_MODE: "invalid",
+        TELEGRAM_MESSAGE_THREAD_ID: "invalid",
       }),
-    ).toThrow("direct or topic");
+    ).toThrow("positive integer");
   });
   it("finishes healthy channels and resumes only missing parts", async () => {
     const telegram = { send: vi.fn(async () => {}) };

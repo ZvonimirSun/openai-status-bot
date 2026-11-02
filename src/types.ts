@@ -119,7 +119,7 @@ export interface Env {
   CHECK_TOKEN?: string;
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_CHAT_ID?: string;
-  TELEGRAM_CHAT_MODE?: string;
+  TELEGRAM_MESSAGE_THREAD_ID?: string;
   TELEGRAM_WEBHOOK_SECRET?: string;
   TRANSLATION_API_BASE_URL?: string;
   TRANSLATION_API_KEY?: string;

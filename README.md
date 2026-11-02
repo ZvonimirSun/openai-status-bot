@@ -18,12 +18,12 @@
 
 以下普通变量可在 Cloudflare Dashboard 中配置；未配置时使用代码默认值：
 
-| 变量                    | 默认值                               | 用途                                                              |
-| ----------------------- | ------------------------------------ | ----------------------------------------------------------------- |
-| `TARGET_COMPONENT_NAME` | `Codex in ChatGPT Desktop,Codex API` | 逗号分隔的精确组件名                                              |
-| `DISPLAY_TIME_ZONE`     | `Asia/Shanghai`                      | 通知显示时区                                                      |
-| `NOTIFY_ON_BOOTSTRAP`   | `false`                              | 首次运行是否通知                                                  |
-| `TELEGRAM_CHAT_MODE`    | `direct`                             | `direct` 直接发送到 Chat ID；`topic` 自动创建并复用机器人同名话题 |
+| 变量                         | 默认值                               | 用途                                                         |
+| ---------------------------- | ------------------------------------ | ------------------------------------------------------------ |
+| `TARGET_COMPONENT_NAME`      | `Codex in ChatGPT Desktop,Codex API` | 逗号分隔的精确组件名                                         |
+| `DISPLAY_TIME_ZONE`          | `Asia/Shanghai`                      | 通知显示时区                                                 |
+| `NOTIFY_ON_BOOTSTRAP`        | `false`                              | 首次运行是否通知                                             |
+| `TELEGRAM_MESSAGE_THREAD_ID` | 未配置                               | 可选的话题 thread ID；配置后发送到该话题，否则发送到 General |
 
 Secrets：
 
@@ -88,15 +88,9 @@ curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
 
 ### 群组话题
 
-默认 `TELEGRAM_CHAT_MODE=direct`：直接向 `TELEGRAM_CHAT_ID` 发送通知，不附加话题 ID（论坛群中为 General/常规话题）。无需手动配置话题 ID。
+配置 `TELEGRAM_MESSAGE_THREAD_ID` 时，通知发送到指定话题；未配置时直接发送到 `TELEGRAM_CHAT_ID`，论坛群中即 General/常规话题。Worker 不自动创建、查找或恢复话题，不需要话题管理权限。
 
-设置 `TELEGRAM_CHAT_MODE=topic` 后，在实际发送通知前，Worker 校验目标是启用话题的超级群组，且机器人为管理员并具有 `can_manage_topics` 权限。首次发送时使用 `getMe` 返回的机器人显示名称创建话题，并将话题 ID 存入现有 `STATUS_KV`；之后复用记录。静默轮询和查询命令不会创建话题。权限不足或话题发送失败时不降级到 General，沿用通知重试机制，不影响其他通知渠道。其他非空模式值会报错。
-
-Telegram Bot API 无法列举群内话题，因此只能复用本机器人已创建并记录的话题，不能按名称发现或接管手动创建的同名话题。记录按群组及 Bot ID 隔离，轮换同一机器人的 Token 不会重新创建；修改机器人显示名称不会重命名已有话题。不要手动删除话题或清理其 KV 记录。若话题被关闭、删除或 Telegram 返回线程无效，Worker 会清除旧记录、自动创建新话题并仅重试当前消息一次；其他权限或网络错误仍按原有机制重试。
-
-群组中不带 Bot 后缀的 `/check` 只在 `topic` 模式且匹配已记录话题时响应；General 或其他话题中须使用 `/check@你的Bot用户名` 或 `/check @你的Bot用户名`。带 Bot 后缀的命令仍可在群中任何话题使用，回复留在发起命令的位置。命令仅允许配置的 Chat ID，普通文本不处理。Telegram 是否推送直接命令取决于隐私模式、管理员权限及其群组消息投递规则。
-
-话题记录使用现有免费额度内的 KV，不引入 Durable Objects、Queues 或其他付费服务。查询直接命令时在 topic 模式会读取话题记录，但不写 KV；每次新建话题增加一次 KV 写入。KV 最终一致，且无法与 Telegram 创建操作原子提交，因此极端并发、KV 记录丢失或创建响应丢失时可能产生同名话题；默认每 5 分钟的单一 Cron 可降低此风险，不能保证严格唯一。切换模式视为更换投递目标，旧模式尚未完成的通知会跳过，不会迁移到新模式。
+群组中不带 Bot 后缀的 `/check` 仅在配置了 `TELEGRAM_MESSAGE_THREAD_ID` 且消息位于该话题时响应；General 或其他话题中须使用 `/check@你的Bot用户名` 或 `/check @你的Bot用户名`。带 Bot 后缀的命令可在群中任何话题使用，回复留在发起命令的位置。命令仅允许配置的 Chat ID，普通文本不处理。
 
 ## Cloudflare 首次部署
 
@@ -109,7 +103,7 @@ Telegram Bot API 无法列举群内话题，因此只能复用本机器人已创
 ```dotenv
 # TELEGRAM_BOT_TOKEN=...
 # TELEGRAM_CHAT_ID=...
-# TELEGRAM_CHAT_MODE=topic
+# TELEGRAM_MESSAGE_THREAD_ID=replace-with-message-thread-id
 # TELEGRAM_WEBHOOK_SECRET=...
 CHECK_TOKEN=...
 TRANSLATION_API_KEY=...
@@ -145,7 +139,7 @@ npm run deploy
 
 Widget 是官网使用的代理接口，并非稳定性有保证的公开 API；结构校验失败按事件源不可用处理，保留旧事件集合，不推断恢复。
 
-升级时可在 Dashboard 删除已废弃变量 `INCIDENT_MATCH_MODE`、`TELEGRAM_BOT_USERNAME` 和 `TELEGRAM_MESSAGE_THREAD_ID`。其他变量、KV、Secret、Cron 和构建部署配置不变。发布后检查一次正常 Cron 和 `/check`；每次轮询应查询组件及当前事件，无变化时无 KV 写入，查询不写 KV。若 Dashboard 已设置旧的 `TARGET_COMPONENT_NAME=Codex API` 或单独 Desktop，应删除该覆盖值或改成 `Codex in ChatGPT Desktop,Codex API`，否则仍只检查一个组件的状态。已有未完成通知仍按原投递机制先重试，不自动清除。
+升级时可在 Dashboard 删除已废弃变量 `INCIDENT_MATCH_MODE`、`TELEGRAM_BOT_USERNAME` 和 `TELEGRAM_CHAT_MODE`。其他变量、KV、Secret、Cron 和构建部署配置不变。发布后检查一次正常 Cron 和 `/check`；每次轮询应查询组件及当前事件，无变化时无 KV 写入，查询不写 KV。若 Dashboard 已设置旧的 `TARGET_COMPONENT_NAME=Codex API` 或单独 Desktop，应删除该覆盖值或改成 `Codex in ChatGPT Desktop,Codex API`，否则仍只检查一个组件的状态。已有未完成通知仍按原投递机制先重试，不自动清除。
 
 ## 通知内容
 

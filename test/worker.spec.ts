@@ -267,7 +267,7 @@ describe("worker handlers", () => {
         TELEGRAM_WEBHOOK_SECRET: "hook-secret",
         ...(configuredThread === undefined
           ? {}
-          : { TELEGRAM_CHAT_MODE: "topic" }),
+          : { TELEGRAM_MESSAGE_THREAD_ID: configuredThread }),
         WECOM_WEBHOOK_URL: "https://wecom.example",
       };
       const pending: Promise<unknown>[] = [];
@@ -299,13 +299,7 @@ describe("worker handlers", () => {
       expect(response.status).toBe(200);
       await Promise.all(pending);
       expect(kv.puts).toBe(0);
-      expect(kv.gets).toBe(
-        text === "/check" &&
-          chatType !== "private" &&
-          configuredThread !== undefined
-          ? 1
-          : 0,
-      );
+      expect(kv.gets).toBe(0);
       expect(replies[0]!.split("\n")).toHaveLength(3);
       expect(replies[0]).toContain("正常");
       expect(calls.filter((url) => url.endsWith("/sendMessage"))).toHaveLength(
@@ -433,14 +427,13 @@ describe("worker handlers", () => {
           ...(configuredThread === undefined
             ? {}
             : {
-                TELEGRAM_CHAT_MODE: "topic",
-                STATUS_KV: new MemoryKv().asNamespace(),
+                TELEGRAM_MESSAGE_THREAD_ID: configuredThread,
               }),
         },
       );
       expect(response.status).toBe(200);
       expect(fetcher).toHaveBeenCalledTimes(
-        text === "/check@other_bot" ? 1 : 0,
+        text.includes("@other_bot") ? 1 : 0,
       );
     },
   );

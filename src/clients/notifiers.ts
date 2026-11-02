@@ -1,6 +1,5 @@
 import type { Env } from "../types";
 import { sha256 } from "../utils/hash";
-import { TelegramTopicNotifier, telegramTopicMode } from "./telegram-topic";
 
 export interface DeliveryProgress {
   channels: string[];
@@ -175,10 +174,8 @@ export async function createNotifier(
   const telegram = createTelegramClient(env, signal);
   if (telegram) {
     notifiers.push({
-      id: `telegram:${env.TELEGRAM_CHAT_ID!.trim()}${telegramTopicMode(env) ? ":topic" : ""}`,
-      notifier: telegramTopicMode(env)
-        ? new TelegramTopicNotifier(env, telegram, signal)
-        : telegram,
+      id: `telegram:${env.TELEGRAM_CHAT_ID!.trim()}`,
+      notifier: telegram,
     });
   }
   if (env.WECOM_WEBHOOK_URL)
@@ -196,8 +193,14 @@ export function createTelegramClient(
   const token = env.TELEGRAM_BOT_TOKEN?.trim();
   const chatId = env.TELEGRAM_CHAT_ID?.trim();
   if (!token || !chatId) return null;
-  telegramTopicMode(env);
-  return new TelegramNotifier(token, chatId, fetch, signal);
+  const rawThreadId = env.TELEGRAM_MESSAGE_THREAD_ID?.trim();
+  const threadId = rawThreadId ? Number(rawThreadId) : undefined;
+  if (
+    threadId !== undefined &&
+    (!Number.isSafeInteger(threadId) || threadId <= 0)
+  )
+    throw new Error("TELEGRAM_MESSAGE_THREAD_ID must be a positive integer");
+  return new TelegramNotifier(token, chatId, fetch, signal, threadId);
 }
 
 async function readJson(response: Response): Promise<unknown> {
